@@ -1,0 +1,43 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
+// https://github.com/microsoft/vscode-dev-containers/tree/v0.208.0/containers/haskell
+{
+  "name": "Haskell (Community)",
+
+  // Update the 'dockerfile' property if you aren't using the standard 'Dockerfile' filename.
+  "build": {
+          "dockerfile": "Dockerfile",
+          "args": {
+            // Update 'VARIANT' to pick a Haskell version: 9, 8
+            "VARIANT": "8"
+          }
+  },
+  "mounts": [    
+    "type=volume,target=/purescript2/output",
+    "type=volume,target=/purescript2/.stack-work",
+    "type=volume,target=/purescript2/.test_modules",
+    "type=volume,target=/purescript2/.psci_modules",
+    "type=volume,target=/purescript2/lib/purescript-cst/.stack-work"
+  ],
+
+  "workspaceFolder": "/purescript2",
+  
+  "workspaceMount": "source=${localWorkspaceFolder},target=/purescript2,type=bind",
+  
+  // Set *default* container specific settings.json values on container create.
+  "settings": {},
+
+  // Add the IDs of extensions you want installed when the container is created.
+  "extensions": [
+    "haskell.haskell"
+  ],
+
+  // Use 'forwardPorts' to make a list of ports inside the container available locally.
+  // "forwardPorts": [],
+
+  // Use 'postCreateCommand' to run commands after the container is created.
+  // "postCreateCommand": "uname -a",
+  //"containerUser": "root"
+
+  // Comment out connect as root instead. To add a non-root user, see: https://aka.ms/vscode-remote/containers/non-root.
+  // "remoteUser": "vscode"
+}
