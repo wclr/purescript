@@ -1,9 +1,9 @@
 module Language.PureScript.Ide.Usage
-  ( findReexportingModules
-  , directDependants
-  , eligibleModules
-  , applySearch
-  , findUsages
+  ( findUsages
+  --, findReexportingModules
+  --, directDependants
+  --, eligibleModules
+  --, applySearch
   ) where
 
 import Protolude hiding (moduleName)
@@ -15,6 +15,8 @@ import Language.PureScript qualified as P
 import Language.PureScript.Ide.State (getAllModules, getFileState)
 import Language.PureScript.Ide.Types
 import Language.PureScript.Ide.Util (identifierFromIdeDeclaration, namespaceForDeclaration)
+
+import qualified Debug.Trace as Debug
 
 -- |
 -- How we find usages, given an IdeDeclaration and the module it was defined in:
@@ -36,7 +38,7 @@ findUsages declaration moduleName = do
   pure
     $ Map.mapMaybe nonEmpty
     $ Map.mapWithKey (\mn searches ->
-        foldMap (\m -> foldMap (applySearch m) searches) (Map.lookup mn asts)) elig
+        foldMap (applySearches searches) (Map.lookup mn asts)) elig
 
 -- | A declaration can either be imported qualified, or unqualified. All the
 -- information we need to find usages through a Traversal is thus captured in
@@ -60,88 +62,197 @@ findReexportingModules (moduleName, declaration) decls =
       && (d & _idaAnnotation & _annExportedFrom) == Just moduleName
       && (d & _idaDeclaration & namespaceForDeclaration) == namespaceForDeclaration declaration
 
-directDependants :: IdeDeclaration -> ModuleMap P.Module -> P.ModuleName -> ModuleMap (NonEmpty Search)
-directDependants declaration modules mn = Map.mapMaybe (nonEmpty . go) modules
+-- | Gets list of searches of the declaration in module.
+searchesInModule :: IdeDeclaration -> P.Module -> P.ModuleName -> [Search]
+searchesInModule declaration module' mn
+  | P.getModuleName module' == mn = []
+  | otherwise = foldMap isImporting (P.getModuleDeclarations module')
   where
-    go :: P.Module -> [Search]
-    go = foldMap isImporting . P.getModuleDeclarations
-
     isImporting d = case d of
-      P.ImportDeclaration _ mn' it qual | mn == mn' -> P.Qualified (P.byMaybeModuleName qual) <$> case it of
-        P.Implicit -> pure declaration
-        P.Explicit refs
-          | any (declaration `matchesRef`) refs -> pure declaration
-        P.Explicit _ -> []
-        P.Hiding refs
-          | not (any (declaration `matchesRef`) refs) -> pure declaration
-        P.Hiding _ -> []
+      P.ImportDeclaration _ mn' it qual | mn == mn' ->
+        P.Qualified (P.byMaybeModuleName qual) <$> case it of
+          P.Implicit -> pure declaration
+          P.Explicit refs
+            | any (declaration `matchesRef`) refs -> pure declaration
+          P.Explicit _ -> []
+          P.Hiding refs
+            | not (any (declaration `matchesRef`) refs) -> pure declaration
+          P.Hiding _ -> []
       _ -> []
 
--- | Determines whether an IdeDeclaration is referenced by a DeclarationRef.
---
--- TODO(Christoph): We should also extract the spans of matching refs here,
--- since they also count as a usage (at least for rename refactorings)
+
+
 matchesRef :: IdeDeclaration -> P.DeclarationRef -> Bool
-matchesRef declaration ref = case declaration of
+matchesRef declaration ref =
+  isJust $ matchedRefSpan declaration ref
+
+-- | Determines whether an IdeDeclaration is referenced by a DeclarationRef
+-- and returns a source span of the reference.
+matchedRefSpan :: IdeDeclaration -> P.DeclarationRef -> Maybe P.SourceSpan
+matchedRefSpan declaration ref = case declaration of
   IdeDeclValue valueDecl -> case ref of
-    P.ValueRef _ i -> i == _ideValueIdent valueDecl
-    _ -> False
+    P.ValueRef sp i -> mbIf sp $ i == _ideValueIdent valueDecl
+    _ -> Nothing
   IdeDeclType typeDecl -> case ref of
-    P.TypeRef _ tn _ -> tn == _ideTypeName typeDecl
-    _ -> False
+    P.TypeRef sp tn _ -> mbIf sp $ tn == _ideTypeName typeDecl
+    _ -> Nothing
   IdeDeclTypeSynonym synonym -> case ref of
-    P.TypeRef _ tn _ -> tn == _ideSynonymName synonym
-    _ -> False
+    P.TypeRef sp tn _ -> mbIf sp $ tn == _ideSynonymName synonym
+    _ -> Nothing
   IdeDeclDataConstructor dtor -> case ref of
-    P.TypeRef _ tn dtors
+    P.TypeRef sp tn dtors
     -- We check if the given data constructor constructs the type imported
     -- here.
     -- This way we match `Just` with an import like `import Data.Maybe (Maybe(..))`
       | _ideDtorTypeName dtor == tn ->
-          maybe True (elem (_ideDtorName dtor)) dtors
-    _ -> False
+          maybe (Just sp) (mbIf sp . elem (_ideDtorName dtor)) dtors
+    _ -> Nothing
   IdeDeclTypeClass typeClass -> case ref of
-    P.TypeClassRef _ name -> name == _ideTCName typeClass
-    _ -> False
+    P.TypeClassRef sp name -> mbIf sp $ name == _ideTCName typeClass
+    _ -> Nothing
   IdeDeclValueOperator valueOperator -> case ref of
-    P.ValueOpRef _ opName -> opName == _ideValueOpName valueOperator
-    _ -> False
+    P.ValueOpRef sp opName -> mbIf sp $ opName == _ideValueOpName valueOperator
+    _ -> Nothing
   IdeDeclTypeOperator typeOperator -> case ref of
-    P.TypeOpRef _ opName -> opName == _ideTypeOpName typeOperator
-    _ -> False
+    P.TypeOpRef sp opName -> mbIf sp $ opName == _ideTypeOpName typeOperator
+    _ -> Nothing
   IdeDeclModule m -> case ref of
-    P.ModuleRef _ mn -> m == mn
-    _ -> False
+    P.ModuleRef sp mn -> mbIf sp $ m == mn
+    _ -> Nothing
+  where
+    mbIf sp cond = if cond then Just sp else Nothing
 
+-- | Filters modules that import the declaration (including reexports).
 eligibleModules
   :: (P.ModuleName, IdeDeclaration)
   -> ModuleMap [IdeDeclarationAnn]
   -> ModuleMap P.Module
   -> ModuleMap (NonEmpty Search)
 eligibleModules query@(moduleName, declaration) decls modules =
-  let
+    Map.mapMaybe toSearches modules
+      & Map.insert moduleName searchDefiningModule
+  where
     searchDefiningModule = P.Qualified P.ByNullSourcePos declaration :| []
-  in
-    Map.insert moduleName searchDefiningModule $
-      foldMap (directDependants declaration modules) (moduleName :| findReexportingModules query decls)
+    importsToLookFor = moduleName :| findReexportingModules query decls
 
--- | Finds all usages for a given `Search` throughout a module
-applySearch :: P.Module -> Search -> [P.SourceSpan]
-applySearch module_ search =
+    toSearches m
+      -- skip defining module
+      | P.getModuleName m == moduleName  = Nothing
+      -- nub searches because we may have duplicated imports
+      | otherwise = nonEmpty $ ordNub $
+        foldMap (searchesInModule declaration m)
+        importsToLookFor
+
+-- | Finds all usages for a given `Search`es throughout a module.
+applySearches :: NonEmpty Search -> P.Module -> [P.SourceSpan]
+applySearches searches module_ =
   foldMap findUsageInDeclaration decls
   where
+    --decls = seq (Debug.traceShowId $ (P.getModuleName module_, length searches) ) P.getModuleDeclarations module_
     decls = P.getModuleDeclarations module_
     findUsageInDeclaration =
       let
-        (extr, _, _, _, _) = P.everythingWithScope mempty goExpr goBinder mempty mempty
+        (extr, _, _, _, _) = P.everythingWithScope goDecl goExpr goBinder mempty mempty
       in
         extr mempty
 
-    goExpr scope expr = case expr of
+    folds = flip foldMap searches
+
+    goType ideType search t = case t of
+      P.TypeConstructor (sp, _) tyName ->
+          [sp | tyName == (search $> _ideTypeName ideType) ]
+      _ -> []
+
+    foldDataCtorTypes f (P.DataConstructorDeclaration _ _ vars) =
+      foldMap (\(_, st) -> f st) vars
+
+    sourceTypeSearch search =
+      (\ideType -> P.everythingOnTypes (++) (goType ideType search))
+        <$> preview _IdeDeclType (P.disqualify search)
+
+    constraintTypes =
+      foldMap (\c -> P.constraintArgs c <> P.constraintKindArgs c)
+
+    qualBy (P.Qualified by _ ) = by
+
+    goDecl _ decl = folds $ \search -> case decl of
+      P.TypeDeclaration dt
+        | Just ideType <- preview _IdeDeclType (P.disqualify search) ->
+           P.everythingOnTypes (++) (goType ideType search) (P.tydeclType dt)
+      P.DataDeclaration _ _ _ _ ctors
+        | Just goSt <- sourceTypeSearch search ->
+          foldMap (foldDataCtorTypes goSt) ctors
+      P.TypeSynonymDeclaration _ _ _ st
+        | Just goSt <- sourceTypeSearch search ->
+          goSt st
+      P.KindDeclaration _ _ _ st
+        | Just goSt <- sourceTypeSearch search ->
+          goSt st
+      P.FixityDeclaration (sp, _) (Right (P.TypeFixity _ tn _))
+        | Just ty <- preview _IdeDeclType (P.disqualify search) ->
+          [sp  | (search $> _ideTypeName ty) == tn ]
+      P.FixityDeclaration (sp, _) (Left (P.ValueFixity _ (P.Qualified qual val)  _))
+        | qualBy search == qual ->
+            case val of
+              Right cn
+                | Just ty <- preview _IdeDeclDataConstructor (P.disqualify search) ->
+                [sp | _ideDtorName ty == cn ]
+              Left i ->
+                 [sp | P.runIdent i == identifierFromIdeDeclaration (P.disqualify search)]
+              _ ->
+                  []
+        | otherwise ->
+          []
+
+      -- TODO: handle TC declarations, TC name
+      P.TypeClassDeclaration _ _ _ cs _ _
+        | Just goSt <- sourceTypeSearch search ->
+          foldMap goSt (constraintTypes cs)
+      -- TODO: handle instance body
+      P.TypeInstanceDeclaration _ _ _ _ _ cs _ sts _
+        | Just goSt <- sourceTypeSearch search ->
+          foldMap goSt (constraintTypes cs ++ sts)
+      -- TODO: constraintClass - no exact span too
+      {- TypeInstanceDeclaration
+        SourceAnn SourceAnn ChainId Integer (Either Text Ident)
+        [SourceConstraint]
+        (Qualified (ProperName 'ClassName))
+        [SourceType]
+        TypeInstanceBody
+        -}
+      P.TypeInstanceDeclaration (sp, _) _ _ _ _ _ tc _ _
+        | Just ideTC <- preview _IdeDeclTypeClass (P.disqualify search) ->
+          [sp | (search $> _ideTCName ideTC) == tc]
+
+      -- TODO: search for type class methods?
+      -- P.TypeInstanceDeclaration (sp, _) _ _ _ _ _ _ _ (P.ExplicitInstance decls) ->
+      --   foldMap (goDecl scope) decls
+
+      -- P.ValueDeclaration (P.ValueDeclarationData _ ident _ _ _) ->
+      --   []
+
+      P.ImportDeclaration _ _ it qual
+        | P.getQual search == qual ->
+          case it of
+            P.Explicit refs ->
+              foldRefs refs
+            P.Hiding refs ->
+              foldRefs refs
+            _ ->
+              []
+          where
+            foldRefs =
+              foldMap (maybeToList . matchedRefSpan (P.disqualify search))
+      _ -> []
+
+    isLocal scope ident = P.LocalIdent ident `Set.member` scope
+
+    goExpr scope expr = folds $ \search -> case expr of
       P.Var sp i
         | Just ideValue <- preview _IdeDeclValue (P.disqualify search)
         , P.isQualified search
-          || not (P.LocalIdent (_ideValueIdent ideValue) `Set.member` scope) ->
+          || not (isLocal scope (_ideValueIdent ideValue)) ->
+          --[sp | Debug.traceShowId $ Debug.traceShowId (map P.runIdent i) == Debug.traceShowId (map identifierFromIdeDeclaration search)]
           [sp | map P.runIdent i == map identifierFromIdeDeclaration search]
       P.Constructor sp name
         | Just ideDtor <- traverse (preview _IdeDeclDataConstructor) search ->
@@ -149,9 +260,12 @@ applySearch module_ search =
       P.Op sp opName
         | Just ideOp <- traverse (preview _IdeDeclValueOperator) search ->
           [sp | opName == map _ideValueOpName ideOp]
+      P.TypedValue _ _ st
+        | Just goSt <- sourceTypeSearch search ->
+          goSt st
       _ -> []
 
-    goBinder _ binder = case binder of
+    goBinder _ binder = folds $ \search -> case binder of
       P.ConstructorBinder sp ctorName _
         | Just ideDtor <- traverse (preview _IdeDeclDataConstructor) search ->
           [sp | ctorName == map _ideDtorName ideDtor]
