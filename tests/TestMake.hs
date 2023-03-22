@@ -3,7 +3,7 @@
 
 module TestMake where
 
-import Prelude
+import Prelude hiding (writeFile)
 
 import Language.PureScript qualified as P
 import Language.PureScript.CST qualified as CST
@@ -26,6 +26,7 @@ import System.IO.Error (isDoesNotExistError)
 import System.IO.UTF8 (readUTF8FilesT, writeUTF8FileT)
 
 import Test.Hspec (Spec, before_, it, shouldReturn)
+import Debug.Trace (trace)
 
 utcMidnightOnDate :: Integer -> Int -> Int -> UTCTime
 utcMidnightOnDate year month day = UTCTime (fromGregorian year month day) (secondsToDiffTime 0)
@@ -36,141 +37,200 @@ timestampB = utcMidnightOnDate 2019 1 2
 timestampC = utcMidnightOnDate 2019 1 3
 timestampD = utcMidnightOnDate 2019 1 4
 
+oneSecond :: Int
+oneSecond = 10 ^ (6::Int) -- microseconds.
+
+someMs :: Int
+someMs = 10 ^ (3::Int) -- microseconds.
+
 spec :: Spec
 spec = do
   let sourcesDir = "tests/purs/make"
   let moduleNames = Set.fromList . map P.moduleNameFromString
+  let modulePath name = sourcesDir </> (name <> ".purs")
+  let foreignJsPath name = sourcesDir </> (name <> ".js")
+
   before_ (rimraf modulesDir >> rimraf sourcesDir >> createDirectory sourcesDir) $ do
     it "does not recompile if there are no changes" $ do
-      let modulePath = sourcesDir </> "Module.purs"
+      let mPath = sourcesDir </> "Module.purs"
 
-      writeFileWithTimestamp modulePath timestampA "module Module where\nfoo = 0\n"
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
-      compile [modulePath] `shouldReturn` moduleNames []
+      writeFile mPath timestampA "module Module where\nfoo = 0\n"
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
+      compile [mPath] `shouldReturn` moduleNames []
 
     it "recompiles if files have changed" $ do
-      let modulePath = sourcesDir </> "Module.purs"
+      let mPath = sourcesDir </> "Module.purs"
 
-      writeFileWithTimestamp modulePath timestampA "module Module where\nfoo = 0\n"
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
-      writeFileWithTimestamp modulePath timestampB "module Module where\nfoo = 1\n"
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampA "module Module where\nfoo = 0\n"
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampB "module Module where\nfoo = 1\n"
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
 
     it "does not recompile if hashes have not changed" $ do
-      let modulePath = sourcesDir </> "Module.purs"
+      let mPath = modulePath "Module"
           moduleContent = "module Module where\nfoo = 0\n"
 
-      writeFileWithTimestamp modulePath timestampA moduleContent
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
-      writeFileWithTimestamp modulePath timestampB moduleContent
-      compile [modulePath] `shouldReturn` moduleNames []
+      writeFile mPath timestampA moduleContent
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampB moduleContent
+      compile [mPath] `shouldReturn` moduleNames []
 
     it "recompiles if the file path for a module has changed" $ do
       let modulePath1 = sourcesDir </> "Module1.purs"
           modulePath2 = sourcesDir </> "Module2.purs"
           moduleContent = "module Module where\nfoo = 0\n"
 
-      writeFileWithTimestamp modulePath1 timestampA moduleContent
-      writeFileWithTimestamp modulePath2 timestampA moduleContent
+      writeFile modulePath1 timestampA moduleContent
+      writeFile modulePath2 timestampA moduleContent
 
       compile [modulePath1] `shouldReturn` moduleNames ["Module"]
       compile [modulePath2] `shouldReturn` moduleNames ["Module"]
 
     it "recompiles if an FFI file was added" $ do
-      let moduleBasePath = sourcesDir </> "Module"
-          modulePath = moduleBasePath ++ ".purs"
-          moduleFFIPath = moduleBasePath ++ ".js"
+      let mPath = modulePath "Module"
+          mFFIPath = foreignJsPath "Module"
           moduleContent = "module Module where\nfoo = 0\n"
 
-      writeFileWithTimestamp modulePath timestampA moduleContent
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampA moduleContent
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
 
-      writeFileWithTimestamp moduleFFIPath timestampB "export var bar = 1;\n"
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      writeFile mFFIPath timestampB "export var bar = 1;\n"
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
 
     it "recompiles if an FFI file was removed" $ do
-      let moduleBasePath = sourcesDir </> "Module"
-          modulePath = moduleBasePath ++ ".purs"
-          moduleFFIPath = moduleBasePath ++ ".js"
+      let mPath = modulePath "Module"
+          mFFIPath = foreignJsPath "Module"
           moduleContent = "module Module where\nfoo = 0\n"
 
-      writeFileWithTimestamp modulePath timestampA moduleContent
-      writeFileWithTimestamp moduleFFIPath timestampB "export var bar = 1;\n"
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampA moduleContent
+      writeFile mFFIPath timestampB "export var bar = 1;\n"
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
 
-      removeFile moduleFFIPath
-      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      removeFile mFFIPath
+      compile [mPath] `shouldReturn` moduleNames ["Module"]
 
-    it "recompiles downstream modules when a module is rebuilt" $ do
-      let moduleAPath = sourcesDir </> "A.purs"
-          moduleBPath = sourcesDir </> "B.purs"
-          moduleAContent1 = "module A where\nfoo = 0\n"
-          moduleAContent2 = "module A where\nfoo = 1\n"
-          moduleBContent = "module B where\nimport A (foo)\nbar = foo\n"
+    it "recompiles downstream modules when a module is rebuilt and externs changed" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          mAContent1 = "module A where\nfoo = 0\n"
+          mAContent2 = "module A where\nfoo = 1\nbar = 1\n"
+          mBContent = "module B where\nimport A (foo)\nbar = foo\n"
 
-      writeFileWithTimestamp moduleAPath timestampA moduleAContent1
-      writeFileWithTimestamp moduleBPath timestampB moduleBContent
-      compile [moduleAPath, moduleBPath] `shouldReturn` moduleNames ["A", "B"]
+      writeFile mAPath timestampA mAContent1
+      writeFile mBPath timestampB mBContent
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
 
-      writeFileWithTimestamp moduleAPath timestampC moduleAContent2
-      compile [moduleAPath, moduleBPath] `shouldReturn` moduleNames ["A", "B"]
+      writeFile mAPath timestampC mAContent2
+      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
 
-    it "only recompiles downstream modules when a module is rebuilt" $ do
-      let moduleAPath = sourcesDir </> "A.purs"
-          moduleBPath = sourcesDir </> "B.purs"
-          moduleCPath = sourcesDir </> "C.purs"
-          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
-          moduleAContent1 = "module A where\nfoo = 0\n"
-          moduleAContent2 = "module A where\nfoo = 1\n"
-          moduleBContent = "module B where\nimport A (foo)\nbar = foo\n"
-          moduleCContent = "module C where\nbaz = 3\n"
+    it "only recompiles downstream modules when a module is rebuilt end externs changed" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          mCPath = modulePath "C"
+          modulePaths = [mAPath, mBPath, mCPath]
 
-      writeFileWithTimestamp moduleAPath timestampA moduleAContent1
-      writeFileWithTimestamp moduleBPath timestampB moduleBContent
-      writeFileWithTimestamp moduleCPath timestampC moduleCContent
+          mAContent1 = "module A where\nfoo = 0\n"
+          mAContent2 = "module A where\nfoo = 1\nbar = 1\n" -- change externs here
+          mBContent = "module B where\nimport A (foo)\nbar = foo\n"
+          mCContent = "module C where\nbaz = 3\n"
+
+      writeFile mAPath timestampA mAContent1
+      writeFile mBPath timestampB mBContent
+      writeFile mCPath timestampC mCContent
       compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
 
-      writeFileWithTimestamp moduleAPath timestampD moduleAContent2
+      writeFile mAPath timestampD mAContent2
       compile modulePaths `shouldReturn` moduleNames ["A", "B"]
 
-    it "does not necessarily recompile modules which were not part of the previous batch" $ do
-      let moduleAPath = sourcesDir </> "A.purs"
-          moduleBPath = sourcesDir </> "B.purs"
-          moduleCPath = sourcesDir </> "C.purs"
-          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
-          batch1 = [moduleAPath, moduleBPath]
-          batch2 = [moduleAPath, moduleCPath]
-          moduleAContent = "module A where\nfoo = 0\n"
-          moduleBContent = "module B where\nimport A (foo)\nbar = foo\n"
-          moduleCContent = "module C where\nbaz = 3\n"
+    it "recompiles downstream modules when a reexported module changed" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          mCPath = modulePath "C"
+          modulePaths = [mAPath, mBPath, mCPath]
 
-      writeFileWithTimestamp moduleAPath timestampA moduleAContent
-      writeFileWithTimestamp moduleBPath timestampB moduleBContent
-      writeFileWithTimestamp moduleCPath timestampC moduleCContent
+          mAContent1 = "module A where\nfoo = 0\n"
+          mAContent2 = "module A where\nfoo = 1\nbar = 1\n" -- change externs here
+          mBContent = "module B (module E) where\nimport A (foo) as E\n"
+          mCContent = "module C where\nimport B as B\nbaz = B.foo\n"
+
+      writeFile mAPath timestampA mAContent1
+      writeFile mBPath timestampB mBContent
+      writeFile mCPath timestampC mCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      writeFile mAPath timestampD mAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+    it "does not recompile downstream modules when a module is rebuilt but externs have not changed" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          mCPath = modulePath "C"
+          modulePaths = [mAPath, mBPath, mCPath]
+
+          mAContent1 = "module A where\nfoo = 0\n"
+          mAContent2 = "module A (foo) where\nbar = 1\nfoo = 1\n"
+          mBContent =
+            T.unlines
+              [ "module B where"
+              , "import A (foo)"
+              , "import C (baz)"
+              , "bar = foo"
+              , "qux = baz"
+              ]
+          mCContent = "module C where\nbaz = 3\n"
+
+      writeFile mAPath timestampA mAContent1
+      writeFile mBPath timestampB mBContent
+      writeFile mCPath timestampC mCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+      --
+      writeFile mAPath timestampD mAContent2
+      threadDelay oneSecond
+      compile modulePaths `shouldReturn` moduleNames ["A"]
+      -- compile again to check that it won't try recompile skipped module again
+      compile modulePaths `shouldReturn` moduleNames []
+
+    it "does not necessarily recompile modules which were not part of the previous batch" $ do
+      let mAPath = modulePath "A"
+          mBPath = modulePath "B"
+          mCPath = modulePath "C"
+          modulePaths = [mAPath, mBPath, mCPath]
+
+          batch1 = [mAPath, mBPath]
+          batch2 = [mAPath, mCPath]
+
+          mAContent = "module A where\nfoo = 0\n"
+          mBContent = "module B where\nimport A (foo)\nbar = foo\n"
+          mCContent = "module C where\nbaz = 3\n"
+
+      writeFile mAPath timestampA mAContent
+      writeFile mBPath timestampB mBContent
+      writeFile mCPath timestampC mCContent
       compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
 
       compile batch1 `shouldReturn` moduleNames []
       compile batch2 `shouldReturn` moduleNames []
 
     it "recompiles if a module fails to compile" $ do
-      let modulePath = sourcesDir </> "Module.purs"
+      let mPath = sourcesDir </> "Module.purs"
           moduleContent = "module Module where\nfoo :: Int\nfoo = \"not an int\"\n"
 
-      writeFileWithTimestamp modulePath timestampA moduleContent
-      compileAllowingFailures [modulePath] `shouldReturn` moduleNames ["Module"]
-      compileAllowingFailures [modulePath] `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampA moduleContent
+      compileAllowingFailures [mPath] `shouldReturn` moduleNames ["Module"]
+      compileAllowingFailures [mPath] `shouldReturn` moduleNames ["Module"]
 
     it "recompiles if docs are requested but not up to date" $ do
-      let modulePath = sourcesDir </> "Module.purs"
+      let mPath = sourcesDir </> "Module.purs"
+
           moduleContent1 = "module Module where\nx :: Int\nx = 1"
           moduleContent2 = moduleContent1 <> "\ny :: Int\ny = 1"
-          optsWithDocs = P.defaultOptions { P.optionsCodegenTargets = Set.fromList [P.JS, P.Docs] }
-          go opts = compileWithOptions opts [modulePath] >>= assertSuccess
-          oneSecond = 10 ^ (6::Int) -- microseconds.
 
-      writeFileWithTimestamp modulePath timestampA moduleContent1
+          optsWithDocs = P.defaultOptions { P.optionsCodegenTargets = Set.fromList [P.JS, P.Docs] }
+          go opts = compileWithOptions opts [mPath] >>= assertSuccess
+
+      writeFile mPath timestampA moduleContent1
       go optsWithDocs `shouldReturn` moduleNames ["Module"]
-      writeFileWithTimestamp modulePath timestampB moduleContent2
+      writeFile mPath timestampB moduleContent2
       -- See Note [Sleeping to avoid flaky tests]
       threadDelay oneSecond
       go P.defaultOptions `shouldReturn` moduleNames ["Module"]
@@ -178,30 +238,29 @@ spec = do
       -- recompiled.
       go optsWithDocs `shouldReturn` moduleNames ["Module"]
 
-    it "recompiles if corefn is requested but not up to date" $ do
-      let modulePath = sourcesDir </> "Module.purs"
+    it "recompiles if CoreFn is requested but not up to date" $ do
+      let mPath = sourcesDir </> "Module.purs"
           moduleContent1 = "module Module where\nx :: Int\nx = 1"
           moduleContent2 = moduleContent1 <> "\ny :: Int\ny = 1"
-          optsCorefnOnly = P.defaultOptions { P.optionsCodegenTargets = Set.singleton P.CoreFn }
-          go opts = compileWithOptions opts [modulePath] >>= assertSuccess
-          oneSecond = 10 ^ (6::Int) -- microseconds.
+          optsCoreFnOnly = P.defaultOptions { P.optionsCodegenTargets = Set.singleton P.CoreFn }
+          go opts = compileWithOptions opts [mPath] >>= assertSuccess
 
-      writeFileWithTimestamp modulePath timestampA moduleContent1
-      go optsCorefnOnly `shouldReturn` moduleNames ["Module"]
-      writeFileWithTimestamp modulePath timestampB moduleContent2
+      writeFile mPath timestampA moduleContent1
+      go optsCoreFnOnly `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampB moduleContent2
       -- See Note [Sleeping to avoid flaky tests]
       threadDelay oneSecond
       go P.defaultOptions `shouldReturn` moduleNames ["Module"]
-      -- Since the existing corefn.json is now outdated, the module should be
+      -- Since the existing CoreFn.json is now outdated, the module should be
       -- recompiled.
-      go optsCorefnOnly `shouldReturn` moduleNames ["Module"]
+      go optsCoreFnOnly `shouldReturn` moduleNames ["Module"]
 
 -- Note [Sleeping to avoid flaky tests]
 --
 -- One of the things we want to test here is that all requested output files
 -- (via the --codegen CLI option) must be up to date if we are to skip
 -- recompiling a particular module. Since we check for outdatedness by
--- comparing the timestamp of the output files (eg. corefn.json, index.js) to
+-- comparing the timestamp of the output files (eg. CoreFn.json, index.js) to
 -- the timestamp of the externs file, this check is susceptible to flakiness
 -- if the timestamp resolution is sufficiently coarse. To get around this, we
 -- delay for one second.
@@ -232,8 +291,10 @@ compileWithOptions opts input = do
     foreigns <- P.inferForeignModules filePathMap
     let makeActions =
           (P.buildMakeActions modulesDir filePathMap foreigns True)
-            { P.progress = \(P.CompilingModule mn _) ->
-                liftIO $ modifyMVar_ recompiled (return . Set.insert mn)
+            { P.progress = \case
+                P.CompilingModule mn _ ->
+                  liftIO $ modifyMVar_ recompiled (return . Set.insert mn)
+                _ -> pure ()
             }
     P.make makeActions (map snd ms)
 
@@ -264,8 +325,8 @@ compile input =
 compileAllowingFailures :: [FilePath] -> IO (Set P.ModuleName)
 compileAllowingFailures input = fmap snd (compileWithResult input)
 
-writeFileWithTimestamp :: FilePath -> UTCTime -> T.Text -> IO ()
-writeFileWithTimestamp path mtime contents = do
+writeFile :: FilePath -> UTCTime -> T.Text -> IO ()
+writeFile path mtime contents = do
   writeUTF8FileT path contents
   setModificationTime path mtime
 
