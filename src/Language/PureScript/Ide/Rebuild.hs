@@ -231,3 +231,55 @@ sortExterns m ex = do
 -- | Removes a modules export list.
 openModuleExports :: P.Module -> P.Module
 openModuleExports (P.Module ss cs mn decls _) = P.Module ss cs mn decls Nothing
+
+
+rebuildWithDeps
+  :: (Ide m, MonadLogger m, MonadError IdeError m)
+  => FilePath
+  -- ^ The file to rebuild
+  -> Text
+  -- ^ The file to use as the location for parsing and errors
+  -> Set P.CodegenTarget
+  -- ^ The targets to codegen
+  -> (ReaderT IdeEnvironment (LoggingT IO) () -> m ())
+  -- ^ A runner for the second build with open exports
+  -> m Success
+rebuildWithDeps fp input codegenTargets runOpenBuild = do
+
+  (pwarnings, m) <- case sequence $ CST.parseFromFile fp input of
+    Left parseError ->
+      throwError $ RebuildError [(fp, input)] $ CST.toMultipleErrors fp parseError
+    Right m -> pure m
+  let moduleName = P.getModuleName m
+  -- Externs files must be sorted ahead of time, so that they get applied
+  -- in the right order (bottom up) to the 'Environment'.
+  externs <- logPerf (labelTimespec "Sorting externs") (sortExterns m =<< getExternFiles)
+  outputDirectory <- confOutputPath . ideConfiguration <$> ask
+  -- For rebuilding, we want to 'RebuildAlways', but for inferring foreign
+  -- modules using their file paths, we need to specify the path in the 'Map'.
+  let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
+
+
+  foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
+  let makeEnv = P.buildMakeActions outputDirectory filePathMap foreigns False
+        -- & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
+        & shushProgress
+  -- Rebuild the single module using the cached externs
+  (result, warnings) <- logPerf (labelTimespec "Rebuilding Module") $
+    liftIO $ P.runMake (P.defaultOptions { P.optionsCodegenTargets = codegenTargets }) do
+
+      --newExterns <- P.rebuildModule makeEnv externs m
+      newExterns <- P.make makeEnv []
+      -- unless pureRebuild
+      --   $ updateCacheDb codegenTargets outputDirectory file actualFile moduleName
+      pure newExterns
+  case result of
+    Left errors ->
+      throwError (RebuildError [(fp, input)] errors)
+    Right newExterns -> do
+      insertModule (fp, m)
+      --insertExterns newExterns
+      void populateVolatileState
+      _ <- updateCacheTimestamp
+      runOpenBuild (rebuildModuleOpen makeEnv externs m)
+      pure (RebuildSuccess (CST.toMultipleWarnings fp pwarnings <> warnings))
