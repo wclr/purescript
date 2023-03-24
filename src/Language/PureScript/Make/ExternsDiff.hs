@@ -1,32 +1,38 @@
 module Language.PureScript.Make.ExternsDiff
   ( ExternsDiff
-  , diffsEffect
-  , getExternsDiff
+  , emptyDiff
+  , checkDiffs
+  , diffExterns
   ) where
 
 import Protolude
 
-import qualified Language.PureScript.AST as P
-import qualified Language.PureScript.Externs as P
-import qualified Data.List as L
+import Data.List qualified as L
+import Language.PureScript.AST qualified as P
+import Language.PureScript.Externs qualified as P
+
 import Debug.Trace (trace)
 
-data ExternsDiff = ExternsDiff { unDiff :: Maybe [P.Declaration] }
+data ExternsDiff = ExternsDiff {unDiff :: Maybe [P.Declaration]}
   deriving (Show)
 
-diffsEffect :: [ExternsDiff] -> P.Module -> Bool
-diffsEffect diffs m =
-  and (isNothing . unDiff <$> diffs)
+-- | Empty diff means no effective difference between externs exist
+emptyDiff :: ExternsDiff
+emptyDiff = ExternsDiff Nothing
 
-getExternsDiff :: P.ExternsFile -> Maybe P.ExternsFile -> ExternsDiff
-getExternsDiff ex1 ex2' = case ex2' of
-  Just ex2 ->
-    if eq P.efDeclarations then
-      ExternsDiff Nothing
-    else
-      ExternsDiff (Just [])
-    where
-      eq fn = fn ex1 == fn ex2
-      diff = foldl (flip L.delete) (P.efDeclarations ex1)  (P.efDeclarations ex2)
-  Nothing ->
-    ExternsDiff Nothing
+isEmpty :: ExternsDiff -> Bool
+isEmpty =
+  isNothing . unDiff
+
+checkDiffs :: P.Module -> [ExternsDiff] -> Bool
+checkDiffs _ diffs =
+  and (isEmpty <$> diffs)
+
+diffExterns :: P.ExternsFile -> P.ExternsFile -> ExternsDiff
+diffExterns ex1 ex2 =
+  if eq P.efDeclarations
+    then emptyDiff
+    else ExternsDiff (Just [])
+  where
+    eq fn = fn ex1 == fn ex2
+    diff = foldl (flip L.delete) (P.efDeclarations ex1) (P.efDeclarations ex2)

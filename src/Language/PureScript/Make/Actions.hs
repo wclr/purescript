@@ -163,7 +163,6 @@ readCacheDb' outputDir = do
     guard $ cacheDbIsCurrentVersion db
     pure $ fromCacheDbVersioned db
 
-
 writeCacheDb'
   :: (MonadIO m, MonadError MultipleErrors m)
   => FilePath
