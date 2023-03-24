@@ -12,7 +12,6 @@ module Language.PureScript.Make
 
 import Prelude
 
-
 import Control.Concurrent.Lifted as C
 import Control.DeepSeq (force)
 import Control.Exception.Lifted (onException, bracket_, evaluate)
@@ -49,7 +48,7 @@ import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroup
 import Language.PureScript.TypeChecker (CheckState(..), emptyCheckState, typeCheckModule)
 import Language.PureScript.Make.BuildPlan (BuildJobResult(..), BuildPlan(..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
-import Language.PureScript.Make.ExternsDiff (diffsEffect)
+import Language.PureScript.Make.ExternsDiff (checkDiffs)
 import Language.PureScript.Make.Cache qualified as Cache
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.Monad as Monad
@@ -59,6 +58,7 @@ import System.FilePath (replaceExtension)
 
 import Control.Exception.Lifted (evaluate)
 import Debug.Trace (trace)
+import Control.Monad (foldM, unless, when)
 
 -- | Rebuild a single module.
 --
@@ -214,7 +214,7 @@ makeImp ma@MakeActions{..} ms collectAll = do
   (failures, successes) <-
     let
       splitResults = \case
-        BuildJobSucceeded _ exts ->
+        BuildJobSucceeded _ exts _ ->
           Right exts
         BuildJobFailed errs ->
           Left errs
@@ -230,7 +230,6 @@ makeImp ma@MakeActions{..} ms collectAll = do
 
   -- If generating docs, also generate them for the Prim modules
   outputPrimDocs
-
   -- All threads have completed, rethrow any caught errors.
   let errors = M.elems failures
   unless (null errors) $ throwError (mconcat errors)
@@ -299,7 +298,8 @@ makeImp ma@MakeActions{..} ms collectAll = do
           let maySkipBuild moduleIndex
                 | Just exts <- BuildPlan.getPrevResult buildPlan moduleName
                 -- check if no dep's externs have changed
-                , diffsEffect (snd <$> depsDiffExterns) m = do
+                --, diffsEffect (snd <$> depsDiffExterns) m = do
+                , Just True <- checkDiffs m <$> traverse snd depsDiffExterns = do
                   -- We should update modification times to mark existing
                   -- compilation results as actual. If it fails to update timestamp
                   -- on any of exiting codegen targets, it will run the build process.
