@@ -11,15 +11,14 @@ module Language.PureScript.Make.BuildPlan
 
 import Prelude
 
-import Control.Concurrent.Async.Lifted as A
-import Control.Concurrent.Lifted as C
+import Control.Concurrent.Async.Lifted qualified as A
+import Control.Concurrent.Lifted qualified as C
 import Control.Monad.Base (liftBase)
 import Control.Monad (foldM)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
-import Control.Monad.Trans.Maybe (MaybeT(..), runMaybeT)
 import Data.Foldable (foldl')
 import Data.Map qualified as M
-import Data.Maybe (fromMaybe, mapMaybe, isNothing, isJust)
+import Data.Maybe (fromMaybe, mapMaybe, isNothing)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime)
@@ -30,7 +29,7 @@ import Language.PureScript.Errors (MultipleErrors(..))
 import Language.PureScript.Externs (ExternsFile)
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.Cache (CacheDb, CacheInfo, checkChanged)
-import Language.PureScript.Make.ExternsDiff (ExternsDiff, getExternsDiff)
+import Language.PureScript.Make.ExternsDiff (ExternsDiff, diffExterns, emptyDiff)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.Sugar.Names.Env (Env, primEnv)
 import System.Directory (getCurrentDirectory)
@@ -58,38 +57,51 @@ newtype BuildJob = BuildJob
   }
 
 data BuildJobResult
-  = BuildJobSucceeded !MultipleErrors !ExternsFile
-  -- ^ Succeeded, with warnings and externs
+  = BuildJobSucceeded !MultipleErrors !ExternsFile (Maybe ExternsDiff)
+  -- ^ Succeeded, with warnings and externs, also holds externs diff with
+  -- previous build result if any (lazily evaluated).
   --
   | BuildJobFailed !MultipleErrors
-  -- ^ Failed, with errors
+  -- ^ Failed, with errors.
 
   | BuildJobSkipped
-  -- ^ The build job was not run, because an upstream build job failed
+  -- ^ The build job was not run, because an upstream build job failed.
 
-buildJobSuccess :: BuildJobResult -> Maybe (MultipleErrors, ExternsFile)
-buildJobSuccess (BuildJobSucceeded warnings externs) = Just (warnings, externs)
+type SuccessResult = (MultipleErrors, (ExternsFile, Maybe ExternsDiff))
+
+buildJobSuccess :: BuildJobResult -> Maybe SuccessResult
+buildJobSuccess (BuildJobSucceeded warnings externs diff) = Just (warnings, (externs, diff))
 buildJobSuccess _ = Nothing
 
 -- | Information obtained about a particular module while constructing a build
 -- plan; used to decide whether a module needs rebuilding.
 data RebuildStatus = RebuildStatus
-  { statusModuleName :: ModuleName
-  , statusRebuildNever :: Bool
-  , statusNewCacheInfo :: Maybe CacheInfo
+  { rsModuleName :: ModuleName
+  , rsRebuildNever :: Bool
+  , rsNewCacheInfo :: Maybe CacheInfo
     -- ^ New cache info for this module which should be stored for subsequent
     -- incremental builds. A value of Nothing indicates that cache info for
     -- this module should not be stored in the build cache, because it is being
     -- rebuilt according to a RebuildPolicy instead.
-  , statusPrebuilt :: Maybe UTCTime
+  , rsPrebuilt :: Maybe UTCTime
     -- ^ Prebuilt timestamp (compilation time) for this module.
-  , statusUpToDate :: Bool
-  -- ^ Whether or not module timestamp/content changed, checked against provided
-  -- cache-db.
+  , rsUpToDate :: Bool
+    -- ^ Whether or not module (timestamp or content) changed since previous
+    -- compilation (checked against provided cache-db info).
   }
 
-noBarrierErr :: T.Text -> a
-noBarrierErr infx = internalError $ "make: " <> T.unpack infx <> " no barrier"
+-- | Construct common error message indicating a bug in the internal logic
+barrierError :: T.Text -> a
+barrierError infx = internalError $ "make: " <> T.unpack infx <> " no barrier"
+
+-- | Get externs diff is for constructing BuildJobSucceeded.
+getPrevDiff :: BuildPlan -> ModuleName -> ExternsFile -> Maybe ExternsDiff
+getPrevDiff buildPlan moduleName exts =
+  --trace ("getPrevDiff:" <> show moduleName) $
+  diffExterns exts <$> prevExts
+  where
+    prevExts = --trace ("getPrevDiff prevExts:" <> show moduleName) $
+      pbExternsFile <$> snd <$> M.lookup moduleName (bpPreviousBuilt buildPlan)
 
 -- | Called when we finished compiling a module and want to report back the
 -- compilation result, as well as any potential errors that were thrown.
@@ -100,8 +112,15 @@ markComplete
   -> BuildJobResult
   -> m ()
 markComplete buildPlan moduleName result = do
-  let BuildJob rVar = fromMaybe (noBarrierErr "markComplete") $ M.lookup moduleName (bpBuildJobs buildPlan)
-  putMVar rVar result
+  let BuildJob rVar =
+        fromMaybe (barrierError "markComplete") $ M.lookup moduleName (bpBuildJobs buildPlan)
+  -- add externs diff to success result
+  case buildJobSuccess result of
+    Just (errs, (exts, _)) ->
+      let diff = getPrevDiff buildPlan moduleName exts
+      in C.putMVar rVar $ BuildJobSucceeded errs exts diff
+    _ ->
+      C.putMVar rVar result
 
 -- | Whether or not the module with the given ModuleName needs to be rebuilt
 needsRebuild :: BuildPlan -> ModuleName -> Bool
@@ -115,8 +134,10 @@ collectResults
   => BuildPlan
   -> m (M.Map ModuleName BuildJobResult)
 collectResults buildPlan = do
-  let prebuiltResults = M.map (BuildJobSucceeded (MultipleErrors []) . pbExternsFile) (bpPrebuilt buildPlan)
-  barrierResults <- traverse (readMVar . bjResult) $ bpBuildJobs buildPlan
+  let mapExts exts = BuildJobSucceeded (MultipleErrors []) exts Nothing
+  let prebuiltResults =
+        M.map (mapExts . pbExternsFile) (bpPrebuilt buildPlan)
+  barrierResults <- traverse (C.readMVar . bjResult) $ bpBuildJobs buildPlan
   pure (M.union prebuiltResults barrierResults)
 
 -- | Gets the the build result for a given module name independent of whether it
@@ -125,31 +146,17 @@ getResult
   :: (MonadBaseControl IO m)
   => BuildPlan
   -> ModuleName
-  -> m (Maybe (MultipleErrors, (ExternsFile, ExternsDiff)))
+  -> m (Maybe SuccessResult)
 getResult buildPlan moduleName =
   -- may bring back first lookup for bpPrebuilt
   case M.lookup moduleName (bpBuildJobs buildPlan) of
-    Just bj -> do
-      r <- readMVar $ bjResult bj
-      let prevExts =
-            pbExternsFile <$> snd <$> M.lookup moduleName (bpPreviousBuilt buildPlan)
-      --evaluate $ trace ("prevExts" <> show moduleName <> show prevExts) ()
-      --pure $ (\(w, ex) -> (w, (ex, getExternsDiff ex prevExts))) <$> buildJobSuccess r
-      pure $ fmap ((,) <*> flip getExternsDiff prevExts) <$> buildJobSuccess r
+    Just bj ->
+      buildJobSuccess <$> C.readMVar (bjResult bj)
     Nothing -> do
       let exts = pbExternsFile
-            $ fromMaybe (noBarrierErr "getResult")
+            $ fromMaybe (barrierError "getResult")
             $ M.lookup moduleName (bpPrebuilt buildPlan)
-      pure (Just (MultipleErrors [], (exts, getExternsDiff exts Nothing )))
-
-  -- case M.lookup moduleName (bpPrebuilt buildPlan) of
-  --   Just es -> do
-  --     let exts = pbExternsFile es
-  --     pure (Just (MultipleErrors [], (exts, getExternsDiff exts Nothing ))
-  --   Nothing -> do
-  --     r <- readMVar $ bjResult $ fromMaybe (internalError "make: no barrier")
-  --       $ M.lookup moduleName (bpBuildJobs buildPlan)
-  --     pure $ buildJobSuccess r
+      pure (Just (MultipleErrors [], (exts, Just emptyDiff )))
 
 -- | Gets preloaded built result for modules that are going to be built . This
 -- result is used to skip rebuilding if deps (their externs) have not change.
@@ -179,44 +186,47 @@ construct MakeActions{..} cacheDb (sorted, graph) preloadAll = do
   let sortedModuleNames = map (getModuleName . CST.resPartial) sorted
   rebuildStatuses <- A.forConcurrently sortedModuleNames getRebuildStatus
 
-  -- find modules with prebuilt results that is valid to be used
+  -- find modules with prebuilt results that don't need to be rebuilt
   let allPrebuilt =
         foldl' collectPrebuiltModules M.empty $
-          mapMaybe (\s -> (statusModuleName s, statusRebuildNever s,) <$> statusPrebuilt s)
-          (filter statusUpToDate rebuildStatuses)
+          mapMaybe (\s -> (rsModuleName s, rsRebuildNever s,) <$> rsPrebuilt s)
+          (filter rsUpToDate rebuildStatuses)
 
-  -- let statuses = map (\s -> (statusModuleName s, statusPrebuilt s)) rebuildStatuses
-  -- evaluate $ trace ("rebuildStatuses: " <> show statuses) ()
+  -- other modules have to be (may have to be) built
+  let rebuildMap =
+        M.fromList $
+          (\s -> (rsModuleName s, (rsPrebuilt s, rsUpToDate s)))
+            <$> filter (not . flip M.member allPrebuilt . rsModuleName) rebuildStatuses
+  let toBeRebuilt = M.keys rebuildMap
 
-  -- other modules have to be built
-  let toBeRebuilt = filter (not . flip M.member allPrebuilt) sortedModuleNames
+  -- set of all dependencies of modules to be rebuilt
+  let allBuildDeps = S.unions (S.fromList . moduleDeps <$> toBeRebuilt)
+  let inBuildDeps = flip S.member allBuildDeps
 
-  -- we need only prebuilt results for deps of the modules to be build
-  let toBeRebuiltSet = S.fromList toBeRebuilt
-  let depsFolder m dep = case M.lookup dep allPrebuilt of
-        Just _
-          | not (S.member dep toBeRebuiltSet) ->
-            M.insert dep dep m
-        _ -> m
-
-  let toLoadPrebuilt =
+  -- we only need prebuilts for deps of the modules to be build
+  let toLoadPrebuilt = M.mapWithKey const $
         if preloadAll
-          then M.mapWithKey const allPrebuilt
-          else foldl' ((. getDeps) . foldl' depsFolder) M.empty toBeRebuilt
+          then allPrebuilt
+          else M.filterWithKey (const . inBuildDeps) allPrebuilt
 
-  -- we may need previously built results for modules to be build
+  -- we will need previously built results for modules to be build
   -- to skip rebuilding if deps have not changed
-  let toLoadPrevFilter (RebuildStatus {statusModuleName = mn, ..}) =
-        if isJust statusPrebuilt && S.member mn toBeRebuiltSet then
-          Just (mn, (statusUpToDate, mn))
-        else
-          Nothing
-  let toLoadPrev = M.fromList $ mapMaybe toLoadPrevFilter rebuildStatuses
+  let toLoadPrev =
+        M.mapMaybeWithKey
+          ( \mn (prev, upToDate) ->
+              -- also exclude from loading changed modules that have no
+              -- dependants (we actually need to check only against up to date
+              -- dependants, but we check here against all)
+              if isNothing prev || (not upToDate && (not . inBuildDeps) mn)
+                then Nothing
+                else Just (upToDate, mn)
+          )
+          rebuildMap
 
   (prebuiltLoad, prevLoad) <-
     A.concurrently
       (A.forConcurrently toLoadPrebuilt loadPrebuilt)
-      (A.forConcurrently toLoadPrev (\(up, mn) -> fmap (up, ) <$> loadPrebuilt mn ))
+      (A.forConcurrently toLoadPrev (\(up, mn) -> fmap (up,) <$> loadPrebuilt mn ))
 
   let prebuilt = M.mapMaybe id prebuiltLoad
   let previous = M.mapMaybe id prevLoad
@@ -225,7 +235,7 @@ construct MakeActions{..} cacheDb (sorted, graph) preloadAll = do
   -- evaluate $ trace ("prebuilt:" <> show (M.keys prebuilt)) ()
   -- evaluate $ trace ("previous:" <> show (M.keys previous)) ()
 
-  -- if for some reason (wrong version, files corruption) loading externs failed,
+  -- if for some reason (wrong version, files corruption) loading fails,
   -- those modules should be rebuilt too
   let failedLoads = M.keys $ M.filter isNothing prebuiltLoad
   buildJobs <- foldM makeBuildJob M.empty (toBeRebuilt <> failedLoads)
@@ -236,7 +246,7 @@ construct MakeActions{..} cacheDb (sorted, graph) preloadAll = do
     ( BuildPlan prebuilt previous buildJobs env idx
     , let
         update = flip $ \s ->
-          M.alter (const (statusNewCacheInfo s)) (statusModuleName s)
+          M.alter (const (rsNewCacheInfo s)) (rsModuleName s)
       in
         foldl' update cacheDb rebuildStatuses
     )
@@ -254,40 +264,41 @@ construct MakeActions{..} cacheDb (sorted, graph) preloadAll = do
         Left RebuildNever -> do
           timestamp <- getOutputTimestamp moduleName
           pure (RebuildStatus
-            { statusModuleName = moduleName
-            , statusRebuildNever = True
-            , statusPrebuilt = timestamp
-            , statusUpToDate = True
-            , statusNewCacheInfo = Nothing
+            { rsModuleName = moduleName
+            , rsRebuildNever = True
+            , rsPrebuilt = timestamp
+            , rsUpToDate = True
+            , rsNewCacheInfo = Nothing
             })
         Left RebuildAlways -> do
           pure (RebuildStatus
-            { statusModuleName = moduleName
-            , statusRebuildNever = False
-            , statusPrebuilt = Nothing
-            , statusUpToDate = False
-            , statusNewCacheInfo = Nothing
+            { rsModuleName = moduleName
+            , rsRebuildNever = False
+            , rsPrebuilt = Nothing
+            , rsUpToDate = False
+            , rsNewCacheInfo = Nothing
             })
         Right cacheInfo -> do
           cwd <- liftBase getCurrentDirectory
           (newCacheInfo, isUpToDate) <- checkChanged cacheDb moduleName cwd cacheInfo
           timestamp <- getOutputTimestamp moduleName
-
           pure (RebuildStatus
-            { statusModuleName = moduleName
-            , statusRebuildNever = False
-            , statusPrebuilt = timestamp
-            , statusUpToDate = isUpToDate
-            , statusNewCacheInfo = Just newCacheInfo
+            { rsModuleName = moduleName
+            , rsRebuildNever = False
+            , rsPrebuilt = timestamp
+            , rsUpToDate = isUpToDate
+            , rsNewCacheInfo = Just newCacheInfo
             })
 
-    getDeps = fromMaybe (internalError "make: module not found in dependency graph.") . flip lookup graph
+    moduleDeps = fromMaybe graphError . flip lookup graph
+      where
+        graphError = internalError "make: module not found in dependency graph."
 
     collectPrebuiltModules :: M.Map ModuleName UTCTime -> (ModuleName, Bool, UTCTime) -> M.Map ModuleName UTCTime
     collectPrebuiltModules prev (moduleName, rebuildNever, pb)
       | rebuildNever = M.insert moduleName pb prev
       | otherwise = do
-          let deps = getDeps moduleName
+          let deps = moduleDeps moduleName
           case traverse (flip M.lookup prev) deps of
             Nothing ->
               -- If we end up here, one of the dependencies didn't exist in the
