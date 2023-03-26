@@ -46,7 +46,7 @@ import Language.PureScript.Docs.Prim qualified as Docs.Prim
 import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage')
 import Language.PureScript.Externs (ExternsFile, externsFileName)
-import Language.PureScript.Make.Monad (Make, copyFile, getCurrentTime, getTimestamp, getTimestampMaybe, hashFile, makeIO, readExternsFile, readJSONFile, readTextFile, setTimestamp, writeCborFile, writeJSONFile, writeTextFile)
+import Language.PureScript.Make.Monad (Make, getCurrentTime, getTimestamp, getTimestampMaybe, hashFile, makeIO, readExternsFile, readJSONFile, readTextFile', setTimestamp, writeCborFile, writeJSONFile, writeTextFile)
 import Language.PureScript.Make.Cache (CacheDb, ContentHash, cacheDbIsCurrentVersion, fromCacheDbVersioned, normaliseForCache, toCacheDbVersioned)
 import Language.PureScript.Names (Ident(..), ModuleName, runModuleName)
 import Language.PureScript.Options (CodegenTarget(..), Options(..))
@@ -370,11 +370,10 @@ data ForeignModuleType = ESModule | CJSModule deriving (Show)
 
 -- | Check that the declarations in a given PureScript module match with those
 -- in its corresponding foreign module.
-checkForeignDecls :: CF.Module ann -> FilePath -> Make (Either MultipleErrors (ForeignModuleType, S.Set Ident))
-checkForeignDecls m path = do
-  jsStr <- T.unpack <$> readTextFile path
-
+checkForeignDecls :: CF.Module ann -> T.Text -> FilePath -> Make (Either MultipleErrors (ForeignModuleType, S.Set Ident))
+checkForeignDecls m jsText path = do
   let
+    jsStr = T.unpack jsText
     parseResult :: Either MultipleErrors JS.JSAST
     parseResult = first (errorParsingModule . Bundle.UnableToParseModule) $ JS.parseModule jsStr path
   traverse checkFFI parseResult
@@ -481,10 +480,11 @@ ffiCodegen' foreigns codegenTargets makeOutputPath m = do
         | not $ requiresForeign m ->
             tell $ errorMessage' (CF.moduleSourceSpan m) $ UnnecessaryFFIModule mn path
         | otherwise -> do
-            checkResult <- checkForeignDecls m path
+            (bs, jsText) <- readTextFile' path
+            checkResult <- checkForeignDecls m jsText path
             case checkResult of
-              Left _ -> copyForeign path mn
-              Right (ESModule, _) -> copyForeign path mn
+              Left _ -> writeForeign bs mn
+              Right (ESModule, _) -> writeForeign bs mn
               Right (CJSModule, _) -> do
                 throwError $ errorMessage' (CF.moduleSourceSpan m) $ DeprecatedFFICommonJSModule mn path
       Nothing | requiresForeign m -> throwError . errorMessage' (CF.moduleSourceSpan m) $ MissingFFIModule mn
@@ -492,5 +492,5 @@ ffiCodegen' foreigns codegenTargets makeOutputPath m = do
   where
   requiresForeign = not . null . CF.moduleForeign
 
-  copyForeign path mn =
-    for_ makeOutputPath (\outputFilename -> copyFile path (outputFilename mn "foreign.js"))
+  writeForeign bs mn =
+    for_ makeOutputPath (\outputFilename -> writeTextFile (outputFilename mn "foreign.js") bs)
