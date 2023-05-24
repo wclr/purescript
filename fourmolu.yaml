@@ -1,0 +1,6 @@
+newlines-between-decls: 1
+indent-wheres: true
+haddock-style: single-line
+record-brace-space: true
+respectful: true
+import-export-style: leading
