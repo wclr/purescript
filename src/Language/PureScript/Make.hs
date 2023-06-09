@@ -5,6 +5,7 @@ module Language.PureScript.Make
   , rebuildModule'
   , make
   , make'
+  , makeImp
   , inferForeignModules
   , module Monad
   , module Actions
@@ -48,7 +49,7 @@ import Language.PureScript.Sugar (Env, collapseBindingGroups, createBindingGroup
 import Language.PureScript.TypeChecker (CheckState(..), emptyCheckState, typeCheckModule)
 import Language.PureScript.Make.BuildPlan (BuildJobResult(..), BuildPlan(..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
-import Language.PureScript.Make.ExternsDiff (checkDiffs)
+import Language.PureScript.Make.ExternsDiff (checkDiffs, emptyDiff, diffExterns)
 import Language.PureScript.Make.Cache qualified as Cache
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.Monad as Monad
@@ -59,6 +60,18 @@ import System.FilePath (replaceExtension)
 import Control.Exception.Lifted (evaluate)
 import Debug.Trace (trace)
 import Control.Monad (foldM, unless, when)
+
+import GHC.IO (unsafePerformIO)
+import Data.Time as Time
+
+spyTimeM_ :: Monad m => String -> m a -> m a
+spyTimeM_ text act = do
+  let !time0 = unsafePerformIO Time.getCurrentTime
+  res <- act
+  let time1 = unsafePerformIO Time.getCurrentTime
+  !_ <- pure $ unsafePerformIO $ putStrLn $
+    text <> ": " <> show (nominalDiffTimeToSeconds $ diffUTCTime time1 time0)
+  pure res
 
 -- | Rebuild a single module.
 --
@@ -138,7 +151,7 @@ rebuildModuleWithIndex MakeActions{..} exEnv externs m@(Module _ _ moduleName _ 
                Right d -> d
 
   evalSupplyT nextVar'' $ codegen renamed docs exts
-  -- evaluate $ trace ("exts:" <> show moduleName <> ":" <> show exts) ()
+  -- evaluate $ trace ("\n===== externs: " <> show moduleName <> ":\n" <> show exts) ()
   return exts
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file
@@ -154,7 +167,7 @@ make :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWrit
      => MakeActions m
      -> [CST.PartialResult Module]
      -> m [ExternsFile]
-make ma ms = makeImp ma ms False
+make ma ms = makeImp ma ms False True
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file
 -- and an @externs.cbor@ file.
@@ -168,14 +181,15 @@ make' :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWri
      => MakeActions m
      -> [CST.PartialResult Module]
      -> m [ExternsFile]
-make' ma ms = makeImp ma ms True
+make' ma ms = makeImp ma ms True True
 
 makeImp :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
      => MakeActions m
      -> [CST.PartialResult Module]
      -> Bool
+     -> Bool
      -> m [ExternsFile]
-makeImp ma@MakeActions{..} ms collectAll = do
+makeImp ma@MakeActions{..} ms collectAll doThrow = do
   checkModuleNames
   cacheDb <- readCacheDb
 
@@ -232,7 +246,7 @@ makeImp ma@MakeActions{..} ms collectAll = do
   outputPrimDocs
   -- All threads have completed, rethrow any caught errors.
   let errors = M.elems failures
-  unless (null errors) $ throwError (mconcat errors)
+  unless (null errors || not doThrow) $ throwError (mconcat errors)
 
   -- Here we return all the ExternsFile in the ordering of the topological sort,
   -- so they can be folded into an Environment. This result is used in the tests
@@ -241,7 +255,7 @@ makeImp ma@MakeActions{..} ms collectAll = do
         fromMaybe (internalError $ "make: module not found in results: " <> T.unpack name)
         $ M.lookup mn successes
 
-  if collectAll then
+  if collectAll && doThrow then
     pure $ map lookupResult sortedModuleNames
   else
     pure $ mapMaybe (flip M.lookup successes) sortedModuleNames
@@ -288,18 +302,21 @@ makeImp ma@MakeActions{..} ms collectAll = do
       -- MVars for the module's dependencies.
       mexterns <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
 
-      -- it is lazy, so won't load externs until it is needed
-      --prevExt <- snd <$> readExterns moduleName
       case mexterns of
         Just (_, depsDiffExterns) -> do
           let externs = fst <$> depsDiffExterns
           --evaluate $ trace ("diff:" <> show moduleName <> ":" <> show (snd <$> depsDiffExterns)) ()
           --evaluate $ trace ("check diff:" <> show moduleName <> ":" <> show (isNothing $ traverse snd depsDiffExterns)) ()
+          let prevResult = BuildPlan.getPrevResult buildPlan moduleName
+          let depsDiffs = traverse snd depsDiffExterns
           let maySkipBuild moduleIndex
-                | Just exts <- BuildPlan.getPrevResult buildPlan moduleName
+                --  Just exts <- BuildPlan.getPrevResult buildPlan moduleName
+                -- we may skip built only for up-to-date modules
+                | Just (True, exts) <- prevResult
                 -- check if no dep's externs have changed
-                --, diffsEffect (snd <$> depsDiffExterns) m = do
-                , Just True <- checkDiffs m <$> traverse snd depsDiffExterns = do
+                -- if one of the diffs is Nothing means we can not check and need to rebuild
+                --, Just False <- checkDiffs m <$> traverse snd depsDiffExterns = do
+                , Just False <- checkDiffs m <$> depsDiffs = do
                   -- We should update modification times to mark existing
                   -- compilation results as actual. If it fails to update timestamp
                   -- on any of exiting codegen targets, it will run the build process.
@@ -307,7 +324,7 @@ makeImp ma@MakeActions{..} ms collectAll = do
                   --evaluate $ trace ("updated:" <> show updated <> ":" <> show moduleName) ()
                   if updated then do
                     progress $ SkippingModule moduleName moduleIndex
-                    pure $ Just (exts, MultipleErrors [])
+                    pure $ Just (exts, MultipleErrors [], Just (emptyDiff moduleName))
                   else
                     pure Nothing
                 | otherwise = pure Nothing

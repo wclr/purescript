@@ -14,11 +14,11 @@ import Prelude
 import Control.Concurrent.Async.Lifted qualified as A
 import Control.Concurrent.Lifted qualified as C
 import Control.Monad.Base (liftBase)
-import Control.Monad (foldM)
+import Control.Monad (foldM, guard)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Data.Foldable (foldl')
 import Data.Map qualified as M
-import Data.Maybe (fromMaybe, mapMaybe, isNothing)
+import Data.Maybe (fromMaybe, isNothing, catMaybes)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime)
@@ -29,13 +29,16 @@ import Language.PureScript.Errors (MultipleErrors(..))
 import Language.PureScript.Externs (ExternsFile)
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.Cache (CacheDb, CacheInfo, checkChanged)
-import Language.PureScript.Make.ExternsDiff (ExternsDiff, diffExterns, emptyDiff)
+import Language.PureScript.Make.ExternsDiff (ExternsDiff, emptyDiff)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.Sugar.Names.Env (Env, primEnv)
 import System.Directory (getCurrentDirectory)
 
-import Debug.Trace (trace)
+-- import Debug.Trace (trace)
 import Control.Exception.Lifted (evaluate)
+
+trace :: String -> a -> a
+trace _ = id
 
 -- | The BuildPlan tracks information about our build progress, and holds all
 -- prebuilt modules for incremental builds.
@@ -94,15 +97,6 @@ data RebuildStatus = RebuildStatus
 barrierError :: T.Text -> a
 barrierError infx = internalError $ "make: " <> T.unpack infx <> " no barrier"
 
--- | Get externs diff is for constructing BuildJobSucceeded.
-getPrevDiff :: BuildPlan -> ModuleName -> ExternsFile -> Maybe ExternsDiff
-getPrevDiff buildPlan moduleName exts =
-  --trace ("getPrevDiff:" <> show moduleName) $
-  diffExterns exts <$> prevExts
-  where
-    prevExts = --trace ("getPrevDiff prevExts:" <> show moduleName) $
-      pbExternsFile <$> snd <$> M.lookup moduleName (bpPreviousBuilt buildPlan)
-
 -- | Called when we finished compiling a module and want to report back the
 -- compilation result, as well as any potential errors that were thrown.
 markComplete
@@ -114,13 +108,7 @@ markComplete
 markComplete buildPlan moduleName result = do
   let BuildJob rVar =
         fromMaybe (barrierError "markComplete") $ M.lookup moduleName (bpBuildJobs buildPlan)
-  -- add externs diff to success result
-  case buildJobSuccess result of
-    Just (errs, (exts, _)) ->
-      let diff = getPrevDiff buildPlan moduleName exts
-      in C.putMVar rVar $ BuildJobSucceeded errs exts diff
-    _ ->
-      C.putMVar rVar result
+  C.putMVar rVar result
 
 -- | Whether or not the module with the given ModuleName needs to be rebuilt
 needsRebuild :: BuildPlan -> ModuleName -> Bool
@@ -156,18 +144,13 @@ getResult buildPlan moduleName =
       let exts = pbExternsFile
             $ fromMaybe (barrierError "getResult")
             $ M.lookup moduleName (bpPrebuilt buildPlan)
-      pure (Just (MultipleErrors [], (exts, Just emptyDiff )))
+      pure (Just (MultipleErrors [], (exts, Just $ emptyDiff moduleName )))
 
--- | Gets preloaded built result for modules that are going to be built . This
--- result is used to skip rebuilding if deps (their externs) have not change.
---
--- We only return previous built result for up to date modules, because changed
--- modules should be rebuilt anyway.
-getPrevResult :: BuildPlan -> ModuleName -> Maybe ExternsFile
+-- | Gets preloaded previous built result for modules that are going to be built. This
+-- will be used to skip compilation if dep's externs have not changed.
+getPrevResult :: BuildPlan -> ModuleName -> Maybe (Bool, ExternsFile)
 getPrevResult buildPlan moduleName =
-  case M.lookup moduleName (bpPreviousBuilt buildPlan) of
-    Just (True, prebuilt) -> Just (pbExternsFile prebuilt)
-    _ -> Nothing
+  fmap pbExternsFile <$> M.lookup moduleName (bpPreviousBuilt buildPlan)
 
 -- | Constructs a BuildPlan for the given module graph.
 --
@@ -186,57 +169,53 @@ construct MakeActions{..} cacheDb (sorted, graph) preloadAll = do
   let sortedModuleNames = map (getModuleName . CST.resPartial) sorted
   rebuildStatuses <- A.forConcurrently sortedModuleNames getRebuildStatus
 
-  -- find modules with prebuilt results that don't need to be rebuilt
-  let allPrebuilt =
-        foldl' collectPrebuiltModules M.empty $
-          mapMaybe (\s -> (rsModuleName s, rsRebuildNever s,) <$> rsPrebuilt s)
-          (filter rsUpToDate rebuildStatuses)
+  -- Split modules into those that have to be rebuilt and those that have a valid
+  -- prebuilt input. The Bool value in rebuildMap means if we may skip the
+  -- compilation (if externs of dependencies have not changed). If it is False we
+  -- should re-compile the module due to the following: the module's source have
+  -- changed or some of dependencies were compiled later than the module.
+  let (rebuildMap, prebuiltMap) = splitModules rebuildStatuses
 
-  -- other modules have to be (may have to be) built
-  let rebuildMap =
-        M.fromList $
-          (\s -> (rsModuleName s, (rsPrebuilt s, rsUpToDate s)))
-            <$> filter (not . flip M.member allPrebuilt . rsModuleName) rebuildStatuses
   let toBeRebuilt = M.keys rebuildMap
 
-  -- set of all dependencies of modules to be rebuilt
+  -- Set of all dependencies of modules to be rebuilt.
   let allBuildDeps = S.unions (S.fromList . moduleDeps <$> toBeRebuilt)
   let inBuildDeps = flip S.member allBuildDeps
 
-  -- we only need prebuilts for deps of the modules to be build
-  let toLoadPrebuilt = M.mapWithKey const $
-        if preloadAll
-          then allPrebuilt
-          else M.filterWithKey (const . inBuildDeps) allPrebuilt
+  -- We only need prebuilt results for deps of the modules to be build.
+  let toLoadPrebuilt
+        | preloadAll = prebuiltMap
+        | otherwise = M.filterWithKey (const . inBuildDeps) prebuiltMap
 
-  -- we will need previously built results for modules to be build
-  -- to skip rebuilding if deps have not changed
+  -- We will need previously built results for modules to be build
+  -- to skip rebuilding if deps have not changed.
   let toLoadPrev =
         M.mapMaybeWithKey
-          ( \mn (prev, upToDate) ->
-              -- also exclude from loading changed modules that have no
-              -- dependants (we actually need to check only against up to date
-              -- dependants, but we check here against all)
-              if isNothing prev || (not upToDate && (not . inBuildDeps) mn)
-                then Nothing
-                else Just (upToDate, mn)
+          ( \mn prev -> do
+              -- We load previous build result for all up-to-date modules, and
+              -- also for changed modules that have dependants.
+              upToDate <- fst <$> prev
+              guard (upToDate || inBuildDeps mn)
+              prev
           )
           rebuildMap
 
   (prebuiltLoad, prevLoad) <-
     A.concurrently
-      (A.forConcurrently toLoadPrebuilt loadPrebuilt)
-      (A.forConcurrently toLoadPrev (\(up, mn) -> fmap (up,) <$> loadPrebuilt mn ))
+      (A.mapConcurrently id $ M.mapWithKey loadPrebuilt toLoadPrebuilt)
+      (A.mapConcurrently id $ M.mapWithKey
+        (\mn (up, ts) -> fmap (up,) <$> loadPrebuilt mn ts) toLoadPrev)
 
   let prebuilt = M.mapMaybe id prebuiltLoad
   let previous = M.mapMaybe id prevLoad
 
-  -- evaluate $ trace ("toBeRebuilt" <> show toBeRebuilt) ()
+  evaluate $ trace ("rebuild count: " <> show (length toBeRebuilt) <> show toBeRebuilt) ()
+  evaluate $ trace ("prebuilt count: " <> show (length toLoadPrebuilt)) ()
   -- evaluate $ trace ("prebuilt:" <> show (M.keys prebuilt)) ()
   -- evaluate $ trace ("previous:" <> show (M.keys previous)) ()
 
-  -- if for some reason (wrong version, files corruption) loading fails,
-  -- those modules should be rebuilt too
+  -- If for some reason (wrong version, files corruption) loading fails,
+  -- those modules should be rebuilt too.
   let failedLoads = M.keys $ M.filter isNothing prebuiltLoad
   buildJobs <- foldM makeBuildJob M.empty (toBeRebuilt <> failedLoads)
 
@@ -251,7 +230,10 @@ construct MakeActions{..} cacheDb (sorted, graph) preloadAll = do
         foldl' update cacheDb rebuildStatuses
     )
   where
-    loadPrebuilt = fmap (fmap Prebuilt . snd) . readExterns
+    -- Timestamp here is just to ensure that we will try to load modules that
+    -- have previous built results available.
+    loadPrebuilt :: ModuleName -> UTCTime -> m (Maybe Prebuilt)
+    loadPrebuilt = const . fmap (fmap Prebuilt . snd) . readExterns
 
     makeBuildJob prev moduleName = do
       buildJob <- BuildJob <$> C.newEmptyMVar
@@ -294,22 +276,60 @@ construct MakeActions{..} cacheDb (sorted, graph) preloadAll = do
       where
         graphError = internalError "make: module not found in dependency graph."
 
-    collectPrebuiltModules :: M.Map ModuleName UTCTime -> (ModuleName, Bool, UTCTime) -> M.Map ModuleName UTCTime
-    collectPrebuiltModules prev (moduleName, rebuildNever, pb)
-      | rebuildNever = M.insert moduleName pb prev
+    splitModules :: [RebuildStatus] -> (M.Map ModuleName (Maybe (Bool, UTCTime)), M.Map ModuleName UTCTime)
+    splitModules = foldl' collectByStatus (M.empty, M.empty)
+
+    collectByStatus (build, prev) (RebuildStatus mn rebuildNever _ mbPb upToDate)
+      | Nothing <- mbPb = (M.insert mn Nothing build, prev)
+      | Just pb <- mbPb, not upToDate = toRebuild (False, pb)
+      | Just pb <- mbPb, rebuildNever = toPrebuilt pb
+      | Just pb <- mbPb = do
+          let deps = moduleDeps mn
+          let modTimes = map (flip M.lookup prev) deps
+
+          case maximumMaybe (catMaybes modTimes) of
+                -- Check if any of deps where build later. This means we should
+                -- recompile even if the source is up-to-date.
+                Just depModTime | pb < depModTime -> toRebuild (False, pb)
+                -- If one of the deps is not in the prebuilt, we should rebuild.
+                _ | any isNothing modTimes -> toRebuild (upToDate, pb)
+                _ -> toPrebuilt pb
+        where
+          toRebuild v = (M.insert mn (Just v) build, prev)
+          toPrebuilt v = (build, M.insert mn v prev)
+
+
+    collectPrebuiltModules :: (S.Set ModuleName, M.Map ModuleName UTCTime) -> (ModuleName, Bool, UTCTime) -> (S.Set ModuleName, M.Map ModuleName UTCTime)
+    collectPrebuiltModules (invalid, prev) (moduleName, rebuildNever, pb)
+      | rebuildNever = (invalid, M.insert moduleName pb prev)
       | otherwise = do
           let deps = moduleDeps moduleName
-          case traverse (flip M.lookup prev) deps of
-            Nothing ->
-              -- If we end up here, one of the dependencies didn't exist in the
-              -- prebuilt map and so we know a dependency needs to be rebuilt, which
-              -- means we need to be rebuilt in turn.
-              prev
-            Just modTimes ->
-              case maximumMaybe modTimes of
-                Just depModTime | pb < depModTime ->
-                  prev
-                _ -> M.insert moduleName pb prev
+          let modTimes = map (flip M.lookup prev) deps
+
+          -- Check if any of deps where build after the module. This means we
+          -- should rebuild it in any case (even if the source is up-to-date).
+          case maximumMaybe (catMaybes modTimes) of
+                Just depModTime | pb < depModTime -> (S.insert moduleName invalid, prev)
+                -- Check if one of the deps not in the prebuilt, so we should rebuild.
+                _ | any isNothing modTimes -> (invalid, prev)
+                _ -> (invalid, M.insert moduleName pb prev)
+
+    -- collectPrebuiltModules :: M.Map ModuleName UTCTime -> (ModuleName, Bool, UTCTime) -> M.Map ModuleName UTCTime
+    -- collectPrebuiltModules prev (moduleName, rebuildNever, pb)
+    --   | rebuildNever = M.insert moduleName pb prev
+    --   | otherwise = do
+    --       let deps = moduleDeps moduleName
+    --       case traverse (flip M.lookup prev) deps of
+    --         Nothing ->
+    --           -- If we end up here, one of the dependencies didn't exist in the
+    --           -- prebuilt map and so we know a dependency needs to be rebuilt, which
+    --           -- means we need to be rebuilt in turn.
+    --           prev
+    --         Just modTimes ->
+    --           case maximumMaybe modTimes of
+    --             Just depModTime | pb < depModTime ->
+    --               prev
+    --             _ -> M.insert moduleName pb prev
 
 maximumMaybe :: Ord a => [a] -> Maybe a
 maximumMaybe [] = Nothing

@@ -26,8 +26,7 @@ import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Monoid (All(..))
 import Data.Set (Set)
-import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text (Text, pack, unpack)
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import Data.These (These(..))
 import Data.Time.Clock (UTCTime)
@@ -91,11 +90,11 @@ instance Aeson.ToJSON CacheDbVersioned where
 
 cacheDbIsCurrentVersion :: CacheDbVersioned -> Bool
 cacheDbIsCurrentVersion ef =
-  T.unpack (cdbVersion ef) == showVersion Paths.version
+  unpack (cdbVersion ef) == showVersion Paths.version
 
 toCacheDbVersioned :: CacheDb -> CacheDbVersioned
 toCacheDbVersioned =
-  CacheDbVersioned (T.pack $ showVersion Paths.version)
+  CacheDbVersioned (pack $ showVersion Paths.version)
 
 fromCacheDbVersioned :: CacheDbVersioned -> CacheDb
 fromCacheDbVersioned =
