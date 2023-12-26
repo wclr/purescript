@@ -40,7 +40,7 @@ volatileState :: IdeState -> [(Text, [IdeDeclarationAnn])] -> IdeState
 volatileState s ds =
   s {ideVolatileState = vs}
   where
-    vs = IdeVolatileState (AstData Map.empty) (Map.fromList decls) Nothing
+    vs = IdeVolatileState (AstData Map.empty) (Map.fromList decls) Nothing Map.empty Map.empty
     decls = map (first P.moduleNameFromString) ds
 
 annLoc :: IdeDeclarationAnn -> P.SourceSpan -> IdeDeclarationAnn
@@ -127,7 +127,7 @@ inProject f = do
 compileTestProject :: IO Bool
 compileTestProject = inProject $ do
   (_, _, _, procHandle) <-
-    createProcess $ shell "purs compile \"src/**/*.purs\""
+    createProcess $ shell "purs compile \"src/**/*.purs\" > /dev/null"
   r <- tryNTimes 10 (getProcessExitCode procHandle)
   pure (maybe False isSuccess r)
 

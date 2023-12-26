@@ -16,14 +16,14 @@ import Data.Set qualified as S
 import Data.Time qualified as Time
 import Data.Text qualified as Text
 import Language.PureScript qualified as P
-import Language.PureScript.Make (ffiCodegen')
+import Language.PureScript.Make (ffiCodegen', MakeOptions (..))
 import Language.PureScript.Make.Cache (CacheInfo(..), normaliseForCache)
 import Language.PureScript.CST qualified as CST
 
 import Language.PureScript.Ide.Error (IdeError(..))
 import Language.PureScript.Ide.Logging (labelTimespec, logPerf, runLogger)
-import Language.PureScript.Ide.State (cacheRebuild, getExternFiles, insertExterns, insertModule, populateVolatileState, updateCacheTimestamp)
-import Language.PureScript.Ide.Types (Ide, IdeConfiguration(..), IdeEnvironment(..), ModuleMap, Success(..))
+import Language.PureScript.Ide.State (cacheRebuild, getExternFiles, insertExterns, insertModule, populateVolatileState, updateCacheTimestamp, getFileState)
+import Language.PureScript.Ide.Types (Ide, IdeConfiguration(..), IdeEnvironment(..), ModuleMap, Success(..), IdeFileState (..))
 import Language.PureScript.Ide.Util (ideReadFile)
 import System.Directory (getCurrentDirectory)
 
@@ -78,7 +78,7 @@ rebuildFile file actualFile codegenTargets runOpenBuild = do
         & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
         & shushProgress
   -- Rebuild the single module using the cached externs
-  (result, warnings) <- logPerf (labelTimespec "Rebuilding Module") $
+  (result, warnings) <- logPerf (labelTimespec $ "Rebuilding Module" <> " (pure: " <>  show pureRebuild <> ")") $
     liftIO $ P.runMake (P.defaultOptions { P.optionsCodegenTargets = codegenTargets }) do
       newExterns <- P.rebuildModule makeEnv externs m
       unless pureRebuild
@@ -233,6 +233,10 @@ openModuleExports :: P.Module -> P.Module
 openModuleExports (P.Module ss cs mn decls _) = P.Module ss cs mn decls Nothing
 
 
+makePartial :: P.Module -> CST.PartialResult P.Module
+makePartial m =
+  CST.PartialResult m ([], Right m)
+
 rebuildWithDeps
   :: (Ide m, MonadLogger m, MonadError IdeError m)
   => FilePath
@@ -255,6 +259,9 @@ rebuildWithDeps fp input codegenTargets runOpenBuild = do
   -- in the right order (bottom up) to the 'Environment'.
   externs <- logPerf (labelTimespec "Sorting externs") (sortExterns m =<< getExternFiles)
   outputDirectory <- confOutputPath . ideConfiguration <$> ask
+  modules <- fsModules <$> getFileState
+  --getVolatileState
+  let partials = makePartial . fst <$> M.elems modules
   -- For rebuilding, we want to 'RebuildAlways', but for inferring foreign
   -- modules using their file paths, we need to specify the path in the 'Map'.
   let filePathMap = M.singleton moduleName (Left P.RebuildAlways)
@@ -262,14 +269,16 @@ rebuildWithDeps fp input codegenTargets runOpenBuild = do
 
   foreigns <- P.inferForeignModules (M.singleton moduleName (Right fp))
   let makeEnv = P.buildMakeActions outputDirectory filePathMap foreigns False
+        { }
         -- & (if pureRebuild then enableForeignCheck foreigns codegenTargets . shushCodegen else identity)
         & shushProgress
+
   -- Rebuild the single module using the cached externs
+
   (result, warnings) <- logPerf (labelTimespec "Rebuilding Module") $
     liftIO $ P.runMake (P.defaultOptions { P.optionsCodegenTargets = codegenTargets }) do
-
       --newExterns <- P.rebuildModule makeEnv externs m
-      newExterns <- P.make makeEnv []
+      newExterns <- P.make' (MakeOptions False False) makeEnv partials
       -- unless pureRebuild
       --   $ updateCacheDb codegenTargets outputDirectory file actualFile moduleName
       pure newExterns

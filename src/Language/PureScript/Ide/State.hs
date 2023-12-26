@@ -18,6 +18,7 @@
 module Language.PureScript.Ide.State
   ( getLoadedModulenames
   , getExternFiles
+  , getIdeState
   , getFileState
   , resetIdeState
   , cacheRebuild
@@ -28,7 +29,7 @@ module Language.PureScript.Ide.State
   , getAllModules
   , populateVolatileState
   , populateVolatileStateSync
-  , populateVolatileStateSTM
+  --, populateVolatileStateSTM
   , getOutputDirectory
   , updateCacheTimestamp
   -- for tests
@@ -111,6 +112,11 @@ insertModuleSTM ref (fp, module') =
             (P.getModuleName module')
             (module', fp)
             (fsModules (ideFileState x))}}
+
+getIdeState :: Ide m => m IdeState
+getIdeState = do
+  st <- ideStateVar <$> ask
+  liftIO (readTVarIO st)
 
 -- | Retrieves the FileState from the State. This includes loaded Externfiles
 -- and parsed Modules
@@ -234,7 +240,7 @@ populateVolatileStateSTM ref = do
         & resolveInstances externs
         & resolveOperators
         & resolveReexports reexportRefs
-  setVolatileStateSTM ref (IdeVolatileState (AstData asts) (map reResolved results) rebuildCache)
+  setVolatileStateSTM ref (IdeVolatileState (AstData asts) (map reResolved results) rebuildCache mempty mempty)
   pure (force results)
 
 resolveLocations

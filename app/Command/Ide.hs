@@ -20,7 +20,7 @@ module Command.Ide (command) where
 import Protolude
 
 import Data.Aeson qualified as Aeson
-import Control.Concurrent.STM (newTVarIO)
+import Control.Concurrent.STM (newTVarIO, modifyTVar)
 import "monad-logger" Control.Monad.Logger (MonadLogger, logDebug, logError, logInfo)
 import Data.IORef (newIORef)
 import Data.Text.IO qualified as T
@@ -32,13 +32,15 @@ import Language.PureScript.Ide.Command (Command(..), commandName)
 import Language.PureScript.Ide.Util (decodeT, displayTimeSpec, encodeT, logPerf, runLogger)
 import Language.PureScript.Ide.Error (IdeError(..))
 import Language.PureScript.Ide.State (updateCacheTimestamp)
-import Language.PureScript.Ide.Types (Ide, IdeConfiguration(..), IdeEnvironment(..), IdeLogLevel(..), emptyIdeState)
+import Language.PureScript.Ide.Types (Ide, IdeConfiguration(..), IdeEnvironment(..), IdeLogLevel(..), emptyIdeState, ideFileState, fsCacheDb)
 import Network.Socket qualified as Network
 import Options.Applicative qualified as Opts
 import System.Directory (doesDirectoryExist, getCurrentDirectory, setCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO (BufferMode(..), hClose, hFlush, hSetBuffering, hSetEncoding, utf8)
 import System.IO.Error (isEOFError)
+import Language.PureScript (readCacheDb')
+import Data.List (nub)
 
 listenOnLocalhost :: Network.PortNumber -> IO Network.Socket
 listenOnLocalhost port = do
@@ -117,7 +119,7 @@ command = Opts.helper <*> subcommands where
     ideState <- newTVarIO emptyIdeState
     cwd <- getCurrentDirectory
     let fullOutputPath = cwd </> outputPath
-
+    --cacheDb <- readCacheDb' fullOutputPath
     when editorMode
       (putText "The --editor-mode flag is deprecated and ignored. It's now the default behaviour and the flag will be removed in a future version")
 
@@ -135,7 +137,7 @@ command = Opts.helper <*> subcommands where
       conf = IdeConfiguration
         { confLogLevel = logLevel
         , confOutputPath = outputPath
-        , confGlobs = globs
+        , confGlobs = nub globs
         }
     ts <- newIORef Nothing
     let
@@ -171,6 +173,8 @@ command = Opts.helper <*> subcommands where
     "none" -> LogNone
     _ -> LogDefault
 
+
+
 startServer :: Network.PortNumber -> IdeEnvironment -> IO ()
 startServer port env = Network.withSocketsDo $ do
   sock <- listenOnLocalhost port
@@ -194,6 +198,11 @@ startServer port env = Network.withSocketsDo $ do
                   updateCacheTimestamp >>= \case
                     Nothing -> pure ()
                     Just (before, after) -> do
+                      outputDirectory <- confOutputPath . ideConfiguration <$> ask
+                      cacheDb <- fromRight mempty <$> runExceptT (readCacheDb' outputDirectory)
+                      stVar <- ideStateVar <$> ask
+                      liftIO $ atomically $ modifyTVar stVar
+                        $ \s -> s { ideFileState = (ideFileState s) { fsCacheDb = cacheDb }}
                       -- If the cache db file was changed outside of the IDE
                       -- we trigger a reset before processing the command
                       $(logInfo) ("cachedb was changed from: " <> show before <> ", to: " <> show after)

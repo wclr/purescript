@@ -19,7 +19,7 @@ import Language.PureScript.Ide.Types (IdeDataConstructor(..), IdeDeclaration(..)
 import Language.PureScript.Ide.Util (properNameT)
 
 readExternFile
-  :: (MonadIO m, MonadError IdeError m, MonadLogger m)
+  :: (MonadIO m, MonadError IdeError m)
   => FilePath
   -> m P.ExternsFile
 readExternFile fp = do
@@ -35,7 +35,7 @@ readExternFile fp = do
                 <> toS fp
                 <> " Expected: " <> version
                 <> " Found: " <> efVersion
-          logErrorN errMsg
+          -- logErrorN errMsg
           throwError (GeneralError errMsg)
         _ ->
           throwError (GeneralError ("Parsing the extern at: " <> toS fp <> " failed"))
