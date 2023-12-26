@@ -1,0 +1,1 @@
+export const usageF = 10
