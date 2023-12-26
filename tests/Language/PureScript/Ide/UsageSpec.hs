@@ -195,7 +195,7 @@ spec = beforeAll (makeSpanFinder allModules) $
         --, span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
         ]
 
-    test fit "foreign data type"
+    test it "foreign data type"
       [mFindUsage, mDefinition]
       (mDefinition, "FData", IdeNSType)
       $ \span ->
