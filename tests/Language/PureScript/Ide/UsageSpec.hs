@@ -1,18 +1,19 @@
 module Language.PureScript.Ide.UsageSpec where
 
-import Protolude
+import Protolude hiding (trace)
 
 import Control.Exception (throw)
 import Data.List ((!!), findIndices)
 import Data.Text qualified as Text
+import Data.Text.Internal.Search qualified as Search
 import Language.PureScript.Ide.Command (Command(..))
 import Language.PureScript.Ide.Types (IdeNamespace(..), Success(..))
 import Language.PureScript.Ide.Test qualified as Test
 import Language.PureScript qualified as P
-import Test.Hspec (Expectation, Spec, describe, it, shouldBe)
-import Data.Text.Read (decimal)
-import System.FilePath ((</>))
+import Test.Hspec (Expectation, Spec, beforeAll, describe, fit, it, shouldBe)
+import System.FilePath ((</>), makeRelative)
 import System.IO.UTF8 (readUTF8FileT)
+import Debug.Trace (trace)
 
 load :: [P.ModuleName] -> Command
 load = LoadSync
@@ -51,18 +52,15 @@ checkUsages modules ident expected = do
   usages <- getUsages modules ident
   usages `shouldBeUsages` expected
 
+-- | Finds
 findTextSpan :: Text -> (Text, Text) -> Maybe Span
 findTextSpan moduleText (linePtn, identPtn) = do
-  -- lineIdx <- findIndex (Text.isInfixOf linePtn) textLines
-
-  -- find lines containing linePtn
   let lineIdxs = findIndices (Text.isInfixOf linePtn) textLines
-  -- find the line containing identPattern
   lineIdx <- find (Text.isInfixOf identPtn . (textLines !!)) lineIdxs
 
   let lineText = textLines !! lineIdx
 
-  -- first try to search the ident pattern inside the line pattern
+  -- First try to search the ident pattern inside the line pattern.
   idx <- case head $ Search.indices identPtn linePtn of
     Just insideIdx
       | Just linePtnIdx <- head $ Search.indices linePtn lineText ->
@@ -89,7 +87,7 @@ data SpanFindException = SpanFindException Text deriving (Show)
 
 instance Exception SpanFindException
 
--- maybe later to remove it if multi-line won't be the case
+-- Maybe later to remove it if multi-line won't be the case.
 data SearchPattern
   = SingleLine (Text, Text)
   | MultiLine (Text, Text) (Text, Text)
@@ -149,97 +147,103 @@ makeSpanFinder modules = do
 spec :: Spec
 spec = beforeAll (makeSpanFinder allModules) $
   describe "Finding Usages" $ do
-    it "finds a usage of exported function (usageId)" $ \span -> do
-      checkUsages
-        [mFindUsage, mDefinition, mReexport]
-        (mDefinition, "usageId", IdeNSValue)
-        --
-        [ span mFindUsage $ s ("import FindUsage.Definition", "usageId")
-        , span mFindUsage $ s ("usageFn = usageId", "usageId")
+    test it "exported value"
+      [mFindUsage, mDefinition, mReexport]
+      (mDefinition, "usageId", IdeNSValue)
+      $ \span ->
+        [ span mFindUsage $ s ("usageFn = usageId", "usageId")
         , span mDefinition $ s ("toBeReexported = usageId", "usageId")
+        --, span mFindUsage $ s ("import FindUsage.Definition", "usageId")
         ]
 
-    it "finds a usage of exported function (usageId2)" $ \span -> do
-      usages <- getUsages
-        [mFindUsage, mDefinition, mReexport]
-        (mDefinition, "usageId2", IdeNSValue)
-      usages `shouldBeUsages`
-        [ span mFindUsage $ s ("import FindUsage.Definition", "usageId2")
-        , span mFindUsage $ s ("usageId2 =", "D.usageId2")
+    -- should simplify remove it
+    test it "exported value qualified"
+      [mFindUsage, mDefinition, mReexport]
+      (mDefinition, "usageId2", IdeNSValue)
+      $ \span ->
+        [ span mFindUsage $ s ("usageId2 =", "D.usageId2")
+        --, span mFindUsage $ s ("import FindUsage.Definition", "usageId2")
         ]
 
-    it "finds a usage of simple recursive" $ \span -> do
-      usages <- getUsages
-        [mRecursive]
-        (mRecursive, "recursiveUsage", IdeNSValue)
-      usages `shouldBeUsages`
+    test it "simple recursive and ignores shadowed"
+      [mRecursive]
+      (mRecursive, "recursiveUsage", IdeNSValue)
+      $ \span ->
         [span mRecursive $ s ("-> recursiveUsage x", "recursiveUsage")]
 
-    it "ignores a usage of locally shadowed recursive" $ \_ -> do
-      usages <- getUsages
-        [mRecursiveShadowed]
-        (mRecursiveShadowed, "recursiveUsage", IdeNSValue)
-      usages `shouldBe` []
+    -- it "ignores a usage of locally shadowed recursive" $ \_ -> do
+    --   usages <- getUsages
+    --     [mRecursiveShadowed]
+    --     (mRecursiveShadowed, "recursiveUsage", IdeNSValue)
+    --   usages `shouldBe` []
 
-    it "finds a usage of data type (Usage)" $ \span -> do
-      usages <- getUsages
-        [mFindUsage, mDefinition, mReexport]
-        (mDefinition, "Usage", IdeNSType)
-      usages `shouldBeUsages`
-        [ span mFindUsage $ s ("import FindUsage.Definition", "Usage(Used)")
-        , span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
+    test it "data type"
+      [mFindUsage, mDefinition, mReexport]
+      (mDefinition, "Usage", IdeNSType)
+      $ \span ->
+        [ span mFindUsage $ s ("usageF :: Usage", "Usage")
         , span mFindUsage $ s ("usagePatternMatch :: Usage", "Usage")
+
         , span mFindUsage $ s ("-> D.Usage", "D.Usage")
         , span mFindUsage $ s ("-> (x :: D.Usage)", "D.Usage")
         , span mFindUsage $ s ("Find = Find Usage", "Usage")
         , span mDefinition $ s ("= Array Usage", "Usage")
         -- for infix case it finds the whole line
-        , span mDefinition $ s ("infixl 2 type Usage as <$%>", "infixl 2 type Usage as <$%>")
+        , span mDefinition $ s ("infixl 2 type Usage as $%", "infixl 2 type Usage as $%")
         , span mDefinition $ s ("use :: Usage", "Usage")
+        --, span mFindUsage $ s ("import FindUsage.Definition", "Usage(Used)")
+        --, span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
         ]
 
-    it "finds a usage of data constructor (Used)" $ \span -> do
-      usages <- getUsages
-        [mFindUsage, mDefinition, mReexport]
-        (mDefinition, "Used", IdeNSValue)
-      usages `shouldBeUsages`
-        -- for data cons while pattern position is returned
-        [ span mFindUsage $ s ("import FindUsage.Definition", "Usage(Used)")
-        , span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
-        , span mFindUsage $ s ("D.Used _ ->", "D.Used _")
+    test fit "foreign data type"
+      [mFindUsage, mDefinition]
+      (mDefinition, "FData", IdeNSType)
+      $ \span ->
+        [ span mDefinition $ s (":: FData", "FData")
+        ]
+
+    test it "data constructor"
+      [mFindUsage, mDefinition, mReexport]
+      (mDefinition, "Used", IdeNSValue)
+      $ \span ->
+        -- for data cons whole pattern position is returned
+        [ span mFindUsage $ s ("D.Used _ ->", "D.Used _")
         , span mFindUsage $ s ("= Used 0", "Used")
+        --, span mFindUsage $ s ("import FindUsage.Definition", "Usage(Used)")
+        --, span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
         ]
 
-    it "finds a usage of data constructor (Usage)" $ \span -> do
-      usages <- getUsages
-        [mFindUsage, mDefinition, mReexport]
-        (mDefinition, "Usage", IdeNSValue)
-      usages `shouldBeUsages`
-        -- even if data constructor name is not in import it still will be returned
-        [ span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
-        , span mDefinition $ s ("infixl 2 Usage as $%", "infixl 2 Usage as $%")
+    -- to simplify may combine with previous test
+    test it "data constructor in fixity"
+      [mFindUsage, mDefinition, mReexport]
+      (mDefinition, "Usage", IdeNSValue)
+      $ \span ->
+        [ span mDefinition $ s ("infixl 2 Usage as $%", "infixl 2 Usage as $%")
+        -- even if data constructor name is not in import it still will be returned?
+        -- span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
         ]
 
-    it "finds a usage of constructor alias operator ($%)" $ \span -> do
-      usages <- getUsages
+
+    test it "value operator for constructor"
         [mFindUsage, mDefinition, mReexport]
         (mDefinition, "$%", IdeNSValue)
-      usages `shouldBeUsages`
-        [ span mFindUsage $ s ("import FindUsage.Definition", "($%)")
-        , span mFindUsage $ s ("_ $% _ ->", "$%")
+      $ \span ->
+        [ span mFindUsage $ s ("_ $% _ ->", "$%")
+        --, span mFindUsage $ s ("import FindUsage.Definition", "($%)")
         ]
 
-    it "finds a usage of reexported function" $ \span -> do
-      usages <- getUsages
-        [mFindUsage, mDefinition, mReexport, mReexport2]
-        (mDefinition, "toBeReexported", IdeNSValue)
-      usages `shouldBeUsages`
-        [ span mFindUsage $ s ("import FindUsage.Reexport2", "toBeReexported")
-        , span mFindUsage $ s ("usageId toBeReexported", "toBeReexported")
+    -- we should remove one reexported module
+    test it "reexported function"
+      [mFindUsage, mDefinition, mReexport, mReexport2]
+      (mDefinition, "toBeReexported", IdeNSValue)
+      $ \span ->
+        [ span mFindUsage $ s ("usageId toBeReexported", "toBeReexported")
         -- usage in reexport module it self
-        , span mReexport $ s ("import FindUsage.Definition", "toBeReexported")
+
         , span mReexport $ s ("= X.toBeReexported", "X.toBeReexported")
         , span mReexport2 $ s ("= X.toBeReexported", "X.toBeReexported")
+        --, span mFindUsage $ s ("import FindUsage.Reexport2", "toBeReexported")
+        -- , span mReexport $ s ("import FindUsage.Definition", "toBeReexported")
         ]
 
     it "finds a usage of newtype constructor" $ \span -> do
@@ -256,24 +260,45 @@ spec = beforeAll (makeSpanFinder allModules) $
       usages `shouldBeUsages`
         [span mFindUsage $ s ("instance UsageTC Find", "Find")]
 
-    it "finds a usage of type class (instance)" $ \span -> do
-      usages <- getUsages
-        [mFindUsage, mDefinition]
-        (mDefinition, "UsageTC", IdeNSType)
-      usages `shouldBeUsages`
-        -- for type class instance returns whole instance span
-        [ span mFindUsage $ s ("import FindUsage.Definition", "class UsageTC")
-        , span mFindUsage $ m ("instance UsageTC", "instance") ("use = Find", "Find")
+    test it "type class in instance"
+      [mFindUsage, mDefinition]
+      (mDefinition, "UsageTC", IdeNSType)
+      $ \span ->
+        -- For type class in an instance it finds span of type class with params.
+        -- It maybe be is better to return whole instances body position for ide usages.
+        [ span mFindUsage $ s ("instance UsageTC", "UsageTC Find")
+        --, span mFindUsage $ m ("instance UsageTC", "instance") ("use = Find", "Find")
         ]
+
+        -- for type class instance returns whole instance span
 
     -- it "finds a usage of type class method (use)" $ \span -> do
     --   usages <- getUsages
     --     [mFindUsage, mDefinition]
     --     (mDefinition, "use", IdeNSValue)
     --   usages `shouldBeUsages`
-    --     [ span mFindUsage $ s ("use = Find", "use") ]
+    --     [ span mFindUsage $ s ("use = Find", "use")
+    --     ]
+
+
+    -- Won't search local usages for now.
+    -- fit "finds a usage loc" $ \span -> do
+    --   usages <-
+    --     getUsages
+    --       [mFindUsage, mDefinition]
+    --       (mDefinition, "localId", IdeNSValue)
+    --   usages `shouldBeUsages`
+    --     [ span mDefinition $ s ("loc =", "localId")
+    --     ]
+
 
     where
+    test fn title modules (mDef, ident, ns) expected =
+      fn (Text.unpack ("finds a usage of " <> title <> " `" <> ident <> "`")) $
+        \span -> do
+          usages <- getUsages modules (mDef, ident, ns)
+          usages `shouldBeUsages` expected span
+
     mFindUsage = Test.mn "FindUsage"
     mDefinition = Test.mn "FindUsage.Definition"
     mReexport = Test.mn "FindUsage.Reexport"

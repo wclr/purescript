@@ -1,11 +1,12 @@
 module FindUsage where
 
-import FindUsage.Definition (($%), Usage(Used), usageId, class UsageTC)
+import FindUsage.Definition (($%), Usage(Used), class UsageTC, usageId)
 import FindUsage.Reexport2 (toBeReexported)
 -- import Usage both as non-qualified and qualified
 import FindUsage.Definition (Usage(..), usageId2) as D
 import FindUsage.Definition as D -- test for duplicated imports
 
+foreign import usageF :: Usage
 
 usagePatternMatch :: Usage -> D.Usage
 usagePatternMatch x = case x of
