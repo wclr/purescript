@@ -89,15 +89,19 @@ spec = do
   describe "resolving operators" $ do
     it "resolves the type for a value operator" $
       resolveOperatorsForModule testState (snd testModule) `shouldSatisfy` elem (valueOperator (Just P.srcREmpty))
+
     it "resolves the type for a constructor operator" $
       resolveOperatorsForModule testState (snd testModule) `shouldSatisfy` elem (ctorOperator (Just P.tyString))
+
     it "resolves the kind for a type operator" $
       resolveOperatorsForModule testState (snd testModule) `shouldSatisfy` elem (typeOperator (Just P.kindType))
+
   describe "resolving instances for type classes" $ do
     it "resolves an instance for an existing type class" $ do
       resolveInstances (Map.singleton (mn "InstanceModule") ef) moduleMap
         `shouldSatisfy`
         anyOf (ix (mn "ClassModule") . ix 0 . idaDeclaration . _IdeDeclTypeClass . ideTCInstances . folded) (ideInstance ==)
+        
   describe "resolving data constructors" $ do
     it "resolves a constructor" $ do
       resolveDataConstructorsForModule (snd testModule)

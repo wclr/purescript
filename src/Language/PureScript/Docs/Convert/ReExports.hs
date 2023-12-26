@@ -16,6 +16,7 @@ import Data.Foldable (fold, traverse_)
 import Data.Map (Map)
 import Data.Maybe (mapMaybe)
 import Data.Map qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -81,6 +82,7 @@ updateReExports externs withPackage = execState action
       { P.sigSourceSpan = P.efSourceSpan ef
       , P.sigModuleName = P.efModuleName ef
       , P.sigImports = map (\ei -> (P.eiModule ei, P.nullSourceSpan)) (P.efImports ef)
+      , P.sigReExports = Set.empty
       }
 
 -- |

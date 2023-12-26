@@ -112,6 +112,7 @@ ideReadFile' fileReader fp = do
         (GeneralError
           ("Couldn't resolve path for: " <> show fp <> ", Error: " <> show err))
     Right absPath -> pure absPath
+
   contents <- liftIO (try (fileReader absPath)) >>= \case
     Left (err :: IOException) ->
       throwError
@@ -119,6 +120,7 @@ ideReadFile' fileReader fp = do
           ("Couldn't find file at: " <> show absPath <> ", Error: " <> show err))
     Right contents ->
       pure contents
+
   pure (absPath, contents)
 
 ideReadFile :: (MonadIO m, MonadError IdeError m) => FilePath -> m (FilePath, Text)

@@ -18,6 +18,8 @@ import Data.Map.Lazy qualified as M
 import Language.PureScript qualified as P
 import Language.PureScript.Errors.JSON qualified as P
 import Language.PureScript.Ide.Filter.Declaration (DeclarationType(..))
+import Language.PureScript.Make.Cache (CacheDb)
+import Language.PureScript.CST qualified as CST
 
 type ModuleIdent = Text
 type ModuleMap a = Map P.ModuleName a
@@ -178,16 +180,16 @@ type Ide m = (MonadIO m, MonadReader IdeEnvironment m)
 data IdeState = IdeState
   { ideFileState :: IdeFileState
   , ideVolatileState :: IdeVolatileState
-  } deriving (Show)
+} deriving (Show)
 
 emptyIdeState :: IdeState
 emptyIdeState = IdeState emptyFileState emptyVolatileState
 
 emptyFileState :: IdeFileState
-emptyFileState = IdeFileState M.empty M.empty
+emptyFileState = IdeFileState M.empty M.empty M.empty
 
 emptyVolatileState :: IdeVolatileState
-emptyVolatileState = IdeVolatileState (AstData M.empty) M.empty Nothing
+emptyVolatileState = IdeVolatileState (AstData M.empty) M.empty Nothing M.empty M.empty
 
 
 -- | @IdeFileState@ holds data that corresponds 1-to-1 to an entity on the
@@ -198,6 +200,7 @@ emptyVolatileState = IdeVolatileState (AstData M.empty) M.empty Nothing
 data IdeFileState = IdeFileState
   { fsExterns :: ModuleMap P.ExternsFile
   , fsModules :: ModuleMap (P.Module, FilePath)
+  , fsCacheDb :: CacheDb
   } deriving (Show)
 
 -- | @IdeVolatileState@ is derived from the @IdeFileState@ and needs to be
@@ -211,6 +214,8 @@ data IdeVolatileState = IdeVolatileState
   { vsAstData :: AstData P.SourceSpan
   , vsDeclarations :: ModuleMap [IdeDeclarationAnn]
   , vsCachedRebuild :: Maybe (P.ModuleName, P.ExternsFile)
+  , vsExterns :: ModuleMap P.ExternsFile -- added
+  , vsModules :: ModuleMap P.Module -- added
   } deriving (Show)
 
 newtype Match a = Match (P.ModuleName, a)

@@ -14,6 +14,7 @@
 
 module Language.PureScript.Ide.SourceFile
   ( parseModulesFromFiles
+  , parseModulesFromFiles'
   , extractAstInformation
   -- for tests
   , extractSpans
@@ -43,6 +44,24 @@ parseModulesFromFiles
 parseModulesFromFiles paths = do
   files <- traverse ideReadFile paths
   pure (inParallel (map (uncurry parseModule) files))
+  where
+    inParallel :: [Either e (k, a)] -> [Either e (k, a)]
+    inParallel = withStrategy (parList rseq)
+
+parseModule' :: FilePath -> Text -> Either FilePath (FilePath, CST.PartialResult P.Module)
+parseModule' path file =
+  case CST.parseModuleFromFile path file of
+    Left _ -> Left path
+    Right m -> Right (path, m)
+
+
+parseModulesFromFiles'
+  :: (MonadIO m, MonadError IdeError m)
+  => [FilePath]
+  -> m [Either FilePath (FilePath, CST.PartialResult P.Module)]
+parseModulesFromFiles' paths = do
+  files <- traverse ideReadFile paths
+  pure (inParallel (map (uncurry parseModule') files))
   where
     inParallel :: [Either e (k, a)] -> [Either e (k, a)]
     inParallel = withStrategy (parList rseq)

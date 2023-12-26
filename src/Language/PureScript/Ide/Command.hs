@@ -61,6 +61,7 @@ data Command
     | Import FilePath (Maybe FilePath) [Filter] ImportCommand
     | List { listType :: ListType }
     | Rebuild FilePath (Maybe FilePath) (Set P.CodegenTarget)
+    | Rebuild2 FilePath Text (Set P.CodegenTarget)
     | RebuildSync FilePath (Maybe FilePath) (Set P.CodegenTarget)
     | Cwd
     | Reset
@@ -78,6 +79,7 @@ commandName c = case c of
   Import{} -> "Import"
   List{} -> "List"
   Rebuild{} -> "Rebuild"
+  Rebuild2{} -> "Rebuild2"
   RebuildSync{} -> "RebuildSync"
   Cwd{} -> "Cwd"
   Reset{} -> "Reset"
@@ -175,6 +177,12 @@ instance FromJSON Command where
         Rebuild
           <$> params .: "file"
           <*> params .:? "actualFile"
+          <*> (parseCodegenTargets =<< params .:? "codegen" .!= [ "js" ])
+      "rebuild2" -> do
+        params <- o .: "params"
+        Rebuild2
+          <$> params .: "file"
+          <*> params .: "text"
           <*> (parseCodegenTargets =<< params .:? "codegen" .!= [ "js" ])
       c -> fail ("Unknown command: " <> show c)
     where
