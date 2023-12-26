@@ -1,7 +1,7 @@
 -- Tests for the compiler's handling of incremental builds, i.e. the code in
 -- Language.PureScript.Make.
 
-module TestMake where
+module TestMake (spec) where
 
 import Prelude hiding (writeFile)
 
@@ -25,7 +25,7 @@ import System.Directory (createDirectory, removeDirectoryRecursive, removeFile, 
 import System.IO.Error (isDoesNotExistError)
 import System.IO.UTF8 (readUTF8FilesT, writeUTF8FileT)
 
-import Test.Hspec (Spec, before_, it, fit, xit, shouldReturn)
+import Test.Hspec (Spec, before_, it, fit, xit, shouldReturn, shouldBe)
 import Debug.Trace (trace)
 
 utcMidnightOnDate :: Integer -> Int -> Int -> UTCTime
@@ -36,12 +36,10 @@ timestampA = utcMidnightOnDate 2019 1 1
 timestampB = utcMidnightOnDate 2019 1 2
 timestampC = utcMidnightOnDate 2019 1 3
 timestampD = utcMidnightOnDate 2019 1 4
+timestampE = utcMidnightOnDate 2019 1 5
 
 oneSecond :: Int
 oneSecond = 10 ^ (6::Int) -- microseconds.
-
-someMs :: Int
-someMs = 10 ^ (3::Int) -- microseconds.
 
 spec :: Spec
 spec = do
@@ -226,7 +224,7 @@ spec = do
       compile mPaths `shouldReturn` moduleNames ["B", "C"]
 
     -- Reexports.
-    test3 it "recompiles downstream modules when a reexported module changed"
+    test3 it "recompiles downstream modules when a reexported ref changed"
       ( "module A where\nfoo = 0\n"
       , "module A where\nfoo = '1'\nbar = 1\n" -- change externs here
       , "module B (module E) where\nimport A (foo) as E\n"
@@ -234,13 +232,48 @@ spec = do
       )
       ["A", "B", "C"]
 
-    -- test3 fit "reexported module changed"
-    --   ( "module A where\ndata ABC = A Int | B\n"
-    --   , "module A where\ndata ABC = A String | B\n" -- change externs here
-    --   , "module B (module E) where\nimport A (ABC(..)) as E\n"
-    --   , "module C where\nimport B as B\nbaz = B.A\n"
-    --   )
-    --   ["A", "B", "C"]
+    testWithFailure3 it "recompiles downstream modules when a reexported ref removed"
+      ( "module A where\nfoo = 0\n"
+      , "module A where\nbar = 1\n" -- change externs here
+      , "module B (module E) where\nimport A as E\n"
+      , "module C where\nimport B as B\nbaz = B.foo\n"
+      )
+      ["A", "B", "C"]
+
+    testWithFailure3 it "recompiles downstream modules when a reexported ref removed (from reexported)"
+      ( "module B (module E) where\nimport A (foo) as E\n"
+      , "module B where\nimport A (foo) as E\n"
+      , "module A where\nfoo = 0\n"
+      , "module C where\nimport B as B\nbaz = B.foo\n"
+      )
+      ["B", "C"]
+
+    testWithFailure3 it "recompiles downstream modules when a reexported ref removed (imported but not used)"
+      ( "module B (module E) where\nimport A (foo) as E\n"
+      , "module B where\nimport A (foo) as E\n"
+      , "module A where\nfoo = 0\n"
+      -- Import but not use.
+      , "module C where\nimport B (foo) as B\nx=1\n"
+      )
+      ["B", "C"]
+
+    test3 it "doesn't recompiles downstream when a reexported ref changed and the ref is imported but not used"
+      ( "module A where\nfoo = 0\n"
+      , "module A where\nfoo = '1'\nbar = 1\n" -- change externs here
+      , "module B (module E) where\nimport A as E\n"
+      -- Import but not use.
+      , "module C where\nimport B (foo)\nx = 1\n"
+      )
+      ["A", "B"]
+
+    testWithFailure3 it "recompiles downstream modules when a reexported ref removed in original"
+      ( "module A where\nfoo = 0\n"
+      , "module A where\nbar = 1\n" -- change externs here
+      , "module B (module E) where\nimport A as E\n"
+      -- Import but not use.
+      , "module C where\nimport B (foo)\nx = 1\n"
+      )
+      ["A", "B", "C"]
 
     -- Imports.
     testWithFailure2 it "recompiles downstream when removed reference found in imports"
@@ -312,8 +345,8 @@ spec = do
       )
 
     recompile2 it "data type changed (constructor added)"
-      ( "module A where\ndata T = A Int | B Int\n"
-      , "module A where\ndata T = A Int | B Int | C Int\n"
+      ( "module A where\ndata T = A | B\n"
+      , "module A where\ndata T = A | B | C\n"
       , "module B where\nimport A (T(B))\nb = B"
       )
 
@@ -328,6 +361,13 @@ spec = do
       , "module A where\ntype SynA = String\ndata AB = A SynA | B Int\n"
       -- use type and other constructor
       , "module B where\nimport A (AB(..))\ntype B = AB\nb = B"
+      )
+
+    noRecompile2 it "data type constructor added, but ctors not imported"
+      ( "module A where\ntype SynA = Int\ndata AB = A SynA | B Int\n"
+      , "module A where\ntype SynA = String\ndata AB = A SynA | B Int | C\n"
+      -- use type and other constructor
+      , "module B where\nimport A (AB)\ntype B = AB\n"
       )
 
 
@@ -479,6 +519,500 @@ spec = do
       compile modulePaths `shouldReturn` moduleNames ["A"]
       -- compile again to check that it won't try recompile skipped module again
       compile modulePaths `shouldReturn` moduleNames []
+
+    -- ASDF
+    it "asdf does not recompile if there are no changes" $ do
+      let modulePath = sourcesDir </> "Module.purs"
+
+      writeFile modulePath timestampA "module Module where\nfoo = 0\n"
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      compile [modulePath] `shouldReturn` moduleNames []
+
+    it "asdf recompiles if files have changed" $ do
+      let modulePath = sourcesDir </> "Module.purs"
+
+      writeFile modulePath timestampA "module Module where\nfoo = 0\n"
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      writeFile modulePath timestampB "module Module where\nfoo = 1\n"
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+
+    it "asdf does not recompile if hashes have not changed" $ do
+      let modulePath = sourcesDir </> "Module.purs"
+          moduleContent = "module Module where\nfoo = 0\n"
+
+      writeFile modulePath timestampA moduleContent
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+      writeFile modulePath timestampB moduleContent
+      compile [modulePath] `shouldReturn` moduleNames []
+
+    it "asdf recompiles if the file path for a module has changed" $ do
+      let modulePath1 = sourcesDir </> "Module1.purs"
+          modulePath2 = sourcesDir </> "Module2.purs"
+          moduleContent = "module Module where\nfoo = 0\n"
+
+      writeFile modulePath1 timestampA moduleContent
+      writeFile modulePath2 timestampA moduleContent
+
+      compile [modulePath1] `shouldReturn` moduleNames ["Module"]
+      compile [modulePath2] `shouldReturn` moduleNames ["Module"]
+
+    it "asdf recompiles if an FFI file was added" $ do
+      let moduleBasePath = sourcesDir </> "Module"
+          modulePath = moduleBasePath ++ ".purs"
+          moduleFFIPath = moduleBasePath ++ ".js"
+          moduleContent = "module Module where\nfoo = 0\n"
+
+      writeFile modulePath timestampA moduleContent
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+
+      writeFile moduleFFIPath timestampB "export var bar = 1;\n"
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+
+    it "asdf recompiles if an FFI file was removed" $ do
+      let moduleBasePath = sourcesDir </> "Module"
+          modulePath = moduleBasePath ++ ".purs"
+          moduleFFIPath = moduleBasePath ++ ".js"
+          moduleContent = "module Module where\nfoo = 0\n"
+
+      writeFile modulePath timestampA moduleContent
+      writeFile moduleFFIPath timestampB "export var bar = 1;\n"
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+
+      removeFile moduleFFIPath
+      compile [modulePath] `shouldReturn` moduleNames ["Module"]
+
+    -- Modified data type constructor
+    it "asdf recompiles downstream modules when a data type constructor changes" $ do
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleAContent1 = "module A where\ndata Foo = Foo | Foo10\n"
+          moduleAContent2 = "module A where\ndata Foo = Foo | Foo11\n"
+          moduleBContent = "module B where\nimport A (Foo(..))\nbar = Foo\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      compile [moduleAPath, moduleBPath] `shouldReturn` moduleNames ["A", "B"]
+
+      writeFile moduleAPath timestampC moduleAContent2
+      compile [moduleAPath, moduleBPath] `shouldReturn` moduleNames ["A", "B"]
+
+    it "asdf recompiles direct dependents but not transitive dependents when a data type constructor changes" $ do
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          moduleAContent1 = "module A where\ndata Foo = Foo | Foo20\n"
+          moduleAContent2 = "module A where\ndata Foo = Foo | Foo21\n"
+          moduleBContent = "module B where\nimport A (Foo(..))\nbar = Foo\n"
+          moduleCContent = "module C where\nbaz = 23\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      writeFile moduleAPath timestampD moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A", "B"]
+
+    it "asdf only recompiles direct dependents even if they don't import the constructors" $ do
+      -- NOTE[drathier]: while constructors can still be exported in spirit via
+      -- a Generic instance, all type class instances live next to the data type
+      -- or the type class definition, and we don't inline it, so it will have
+      -- been updated already
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          moduleAContent1 = "module A where\ndata Foo = Foo | Foo20\n"
+          moduleAContent2 = "module A where\ndata Foo = Foo | Foo21\n"
+          moduleBContent = "module B where\nimport A (Foo(..))\nbar = Foo\n"
+          moduleCContent = "module C where\nimport A (Foo)\nbaz :: Foo -> Foo\nbaz a = a\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      writeFile moduleAPath timestampD moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A", "B"]
+
+    it "asdf does not recompile anything when no source files changed" $ do
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          batch1 = [moduleAPath, moduleBPath]
+          batch2 = [moduleAPath, moduleCPath]
+          moduleAContent = "module A where\nfoo = 0\n"
+          moduleBContent = "module B where\nimport A (foo)\nbar = foo\n"
+          moduleCContent = "module C where\nbaz = 3\n"
+
+      writeFile moduleAPath timestampA moduleAContent
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      compile batch1 `shouldReturn` moduleNames []
+      compile batch2 `shouldReturn` moduleNames []
+
+    it "asdf only recompiles one module if it only differs in whitespace" $ do
+      -- not sure if it should recompile anything here, but it does, so this will let us know if anything changes
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          moduleAContent1 = "module A where\nfoo = 0\n"
+          moduleAContent2 = "module A where \nfoo = 0\n"
+          moduleBContent = "module B where\nimport A (foo)\nbar = foo\n"
+          moduleCContent = "module C where\nbaz = 3\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+      -- and again with changes only in whitespace
+      writeFile moduleAPath timestampD moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A"]
+
+    it "asdf only recompiles nothing if it only differs in timestamps" $ do
+      -- not sure if it should recompile anything here, but it does, so this will let us know if anything changes
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          moduleAContent = "module A where\nfoo = 0\n"
+          moduleBContent = "module B where\nimport A (foo)\nbar = foo\n"
+          moduleCContent = "module C where\nbaz = 3\n"
+
+      writeFile moduleAPath timestampA moduleAContent
+      writeFile moduleBPath timestampA moduleBContent
+      writeFile moduleCPath timestampA moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+      -- and again with changes only in timestamp
+      writeFile moduleAPath timestampB moduleAContent
+      writeFile moduleBPath timestampC moduleBContent
+      writeFile moduleCPath timestampD moduleCContent
+      compile modulePaths `shouldReturn` moduleNames []
+
+    -- More complicated caching rules; transitive type aliases
+    it "asdf transitively tracks the underlying type of type aliases, with local type alias" $ do
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          moduleAContent1 = "module A where\ntype TA = Int\n"
+          moduleAContent2 = "module A where\ntype TA = String\n"
+          moduleBContent = "module B where\nimport A\ntype TB = TA\n"
+          moduleCContent = "module C where\nimport B\ntype TC = TB\nthingy :: TC\nthingy = 42\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+      -- type aliases need to be tracked transitively; otherwise the public api of B doesn't change after this compile, and the build succeeds, even though C.thingy = 42 now has a type annotation that says it's a String
+      writeFile moduleAPath timestampD moduleAContent2
+
+      (Left _errors, recompiledModules) <- compileWithResult modulePaths
+      _ <- recompiledModules `shouldBe` moduleNames ["A", "B", "C"]
+      pure ()
+
+    it "asdf transitively tracks the underlying type of type aliases, without local type alias" $ do
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          moduleAContent1 = "module A where\ntype TA = Int\n"
+          moduleAContent2 = "module A where\ntype TA = String\n"
+          moduleBContent = "module B where\nimport A\ntype TB = TA\n"
+          moduleCContent = "module C where\nimport B\nthingy :: TB\nthingy = 42\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+      -- type aliases need to be tracked transitively; otherwise the public api of B doesn't change after this compile, and the build succeeds, even though C.thingy = 42 now has a type annotation that says it's a String
+      writeFile moduleAPath timestampD moduleAContent2
+
+      (Left _errors, recompiledModules) <- compileWithResult modulePaths
+      recompiledModules `shouldBe` moduleNames ["A", "B", "C"]
+      pure ()
+
+    it "asdf should not consider private type aliases to be part of the public api of a module" $ do
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          modulePaths = [moduleAPath, moduleBPath]
+          moduleAContent1 = "module A (TAPublic) where\ntype TAPublic = Int\ntype TAPrivate = Int\n"
+          moduleAContent2 = "module A (TAPublic) where\ntype TAPublic = Int\ntype TAPrivate = String\n"
+          moduleBContent = "module B where\nimport A\nthingy :: TAPublic\nthingy = 42\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+      -- type aliases need to be tracked transitively; otherwise the public api of B doesn't change after this compile, and the build succeeds, even though C.thingy = 42 now has a type annotation that says it's a String
+      writeFile moduleAPath timestampD moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A"]
+      pure ()
+
+    -- More complicated caching rules; transitive type classes
+    it "asdf transitively tracks the underlying type class instance implementations of type classes; instance in same module as type class definition" $ do
+      -- first, type class without type arguments
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+          moduleAContent1 = "module A where\nclass TC a where\n  tc :: a\ninstance TC Int where\n  tc = 42\n"
+          moduleAContent2 = "module A where\nclass TC a where\n  tc :: a\ninstance TC Int where\n  tc = 55\n"
+          moduleBContent = "module B where\nimport A\nthingy = tc\n"
+          moduleCContent = "module C where\nimport B\nasdf = thingy :: Int\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+      -- type class defs need to be tracked transitively; otherwise the public api of B doesn't change after this compile, since C is now implicitly depending on A, via the type class implementation for TC Int, via B
+      writeFile moduleAPath timestampD moduleAContent2
+      -- [drathier]: I thought we'd have to recompile B and C here, since they use the modified type class instance, but since it references the type class instance as a top-level function in that other module, we apparently only have to recompile A
+      -- NOTE[drathiner]: I'm quite worried that even if this works right now, it might not work later. What I'd actually want is to eval some constants, or pattern match the corefn, but that would give a ton of incorrect test failures.
+      -- compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+      compile modulePaths `shouldReturn` moduleNames ["A"]
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+    it "asdf transitively tracks the underlying type class instance implementations of type classes; instance in same module as data type definition" $ do
+      -- first, type class without type arguments
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          moduleDPath = sourcesDir </> "D.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath, moduleDPath]
+          -- diamond shape
+          moduleAContent = "module A where\nclass TC a where\n  tc :: a\n"
+          moduleBContent1 = "module B where\nimport A\ndata BT = BT Int\ninstance TC BT where\n  tc = BT (42)\n"
+          moduleBContent2 = "module B where\nimport A\ndata BT = BT Int\ninstance TC BT where\n  tc = BT (55)\n"
+          moduleCContent = "module C where\nimport A\nthingy = tc\n"
+          moduleDContent = "module D where\nimport B\nimport C\nasdf = thingy :: BT\n"
+
+      -- psm(D).asdf
+      -- {:bT, 42}
+      -- moduleBContent1 to moduleBContent2
+      -- psm(D).asdf
+      -- {:bT, 55}
+      -- instance is referred to as in D b@ps:tCBT()
+
+      writeFile moduleAPath timestampA moduleAContent
+      writeFile moduleBPath timestampB moduleBContent1
+      writeFile moduleCPath timestampC moduleCContent
+      writeFile moduleDPath timestampD moduleDContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C", "D"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+      -- type class defs need to be tracked transitively; otherwise the public api of B doesn't change after this compile, since C is now implicitly depending on A, via the type class implementation for TC Int, via B
+      writeFile moduleBPath timestampD moduleBContent2
+      -- [drathier]: I thought we'd have to recompile D too, but since it references the type class instance as a top-level function in that other module, we don't have to recompile D
+      -- compile modulePaths `shouldReturn` moduleNames ["B", "D"]
+      compile modulePaths `shouldReturn` moduleNames ["B"]
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+    it "asdf tracks type class super classes across module boundaries" $ do
+      -- first, type class without type arguments
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          moduleCPath = sourcesDir </> "C.purs"
+          moduleDPath = sourcesDir </> "D.purs"
+          modulePaths = [moduleAPath, moduleBPath, moduleCPath, moduleDPath]
+          -- diamond shape
+          moduleAContent1 = "module A where\nclass TCA a <= TC a where\n  tc :: a\nclass TCA a\nclass TCB a\nclass TCC a\n"
+          moduleAContent12 = "module A where\nclass (TCA a, TCB a) <= TC a where\n  tc :: a\nclass TCA a\nclass TCB a\nclass TCC a\n"
+          moduleAContent2 = "module A where\nclass TCB a <= TC a where\n  tc :: a\nclass TCA a\nclass TCB a\nclass TCC a\n"
+          moduleAContent3 = "module A where\nclass TCC a <= TC a where\n  tc :: a\nclass TCA a\nclass TCB a\nclass TCC a\n"
+          moduleBContent = "module B where\nimport A\ndata BT = BT Int\ninstance TC BT where\n  tc = BT (55)\ninstance TCA BT\ninstance TCB BT\n"
+          moduleCContent = "module C where\nimport A\nthingy = tc\n"
+          moduleDContent = "module D where\nimport B\nimport C\nasdf = thingy :: BT\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      writeFile moduleCPath timestampC moduleCContent
+      writeFile moduleDPath timestampD moduleDContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C", "D"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+      -- change super class of type class
+      writeFile moduleAPath timestampB moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C", "D"]
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+      -- add second super class of type class
+      writeFile moduleAPath timestampC moduleAContent12
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C", "D"]
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+      -- change super class of type class to one without instance for BT
+      writeFile moduleAPath timestampD moduleAContent3
+      -- should fail because of missing type class instance TCC BT
+      (Left _errors, recompiledModules) <- compileWithResult modulePaths
+      recompiledModules `shouldBe` moduleNames ["A", "B", "C"]
+
+      -- change back to something that should work
+      writeFile moduleAPath timestampE moduleAContent1
+      compile modulePaths `shouldReturn` moduleNames ["A", "B", "C", "D"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+    -- it "asdf re-exporting one more value should trigger downstream recompilations" $ do
+    --   TODO[drathier]: I wasn't able to construct a failing test case for re-exports. I'm not sure if this is a real problem. The export shadowing doesn't seem to be an issue, as it would be in Haskell for example.
+    --   let moduleAPath = sourcesDir </> "A.purs"
+    --       moduleBPath = sourcesDir </> "B.purs"
+    --       moduleCPath = sourcesDir </> "C.purs"
+    --       modulePaths = [moduleAPath, moduleBPath, moduleCPath]
+    --       moduleAContent = "module A where\nasdf = 42\nqwe = 17\n"
+    --       moduleBContent1 = "module B (module A) where\nimport A (asdf)\n"
+    --       moduleBContent2 = "module B (module A) where\nimport A (asdf, qwe)\n"
+    --       moduleCContent = "module C (qwe) where\nimport B\nqwe = 123\n"
+    --
+    --   writeFile moduleAPath timestampA moduleAContent
+    --   writeFile moduleBPath timestampB moduleBContent1
+    --   writeFile moduleCPath timestampC moduleCContent
+    --   compile modulePaths `shouldReturn` moduleNames ["A", "B", "C"]
+    --
+    --   -- no changes when rebuilding
+    --   compile modulePaths `shouldReturn` moduleNames []
+    --
+    --   writeFile moduleBPath timestampD moduleBContent2
+    --   writeFile moduleCPath timestampD (moduleCContent <> "\n")
+    --   compile modulePaths `shouldReturn` moduleNames ["B", "C"]
+
+    it "asdf changing an unexported declaration doesn't trigger downstream recompiles" $ do
+      -- first, type class without type arguments
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          modulePaths = [moduleAPath, moduleBPath]
+          -- diamond shape
+          moduleAContent1 = "module A where\nthingy = 1\n"
+          moduleAContent2 = "module A where\nthingy = 2\n"
+          moduleBContent = "module B where\nimport A\nasdf = thingy\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B"]
+
+      writeFile moduleAPath timestampD moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A"]
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+    it "asdf adding a new declaration doesn't have to trigger downstream recompiles" $ do
+      -- first, type class without type arguments
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          modulePaths = [moduleAPath, moduleBPath]
+          -- diamond shape
+          moduleAContent1 = "module A where\nthingy = 1\n"
+          moduleAContent2 = "module A where\nthingy = 2\nqwer = 234\n"
+          moduleBContent = "module B where\nimport A\nasdf = thingy\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B"]
+
+      writeFile moduleAPath timestampD moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+    it "asdf adding a new data declaration doesn't have to trigger downstream recompiles" $ do
+      -- first, type class without type arguments
+      let moduleAPath = sourcesDir </> "A.purs"
+          moduleBPath = sourcesDir </> "B.purs"
+          modulePaths = [moduleAPath, moduleBPath]
+          -- diamond shape
+          moduleAContent1 = "module A where\nthingy = 1\n"
+          moduleAContent2 = "module A where\nthingy = 2\ndata MyType = MyTypeCtor\n"
+          moduleBContent = "module B where\nimport A (thingy)\nasdf = thingy\n"
+
+      writeFile moduleAPath timestampA moduleAContent1
+      writeFile moduleBPath timestampB moduleBContent
+      compile modulePaths `shouldReturn` moduleNames ["A", "B"]
+
+      writeFile moduleAPath timestampD moduleAContent2
+      compile modulePaths `shouldReturn` moduleNames ["A"]
+
+      -- no changes when rebuilding
+      compile modulePaths `shouldReturn` moduleNames []
+
+    it "asdf recompiles if a module fails to compile" $ do
+      let modulePath = sourcesDir </> "Module.purs"
+          moduleContent = "module Module where\nfoo :: Int\nfoo = \"not an int\"\n"
+
+      writeFile modulePath timestampA moduleContent
+      compileAllowingFailures [modulePath] `shouldReturn` moduleNames ["Module"]
+      compileAllowingFailures [modulePath] `shouldReturn` moduleNames ["Module"]
+
+    it "asdf recompiles if docs are requested but not up to date" $ do
+      let modulePath = sourcesDir </> "Module.purs"
+          moduleContent1 = "module Module where\nx :: Int\nx = 1"
+          moduleContent2 = moduleContent1 <> "\ny :: Int\ny = 1"
+          optsWithDocs = P.defaultOptions { P.optionsCodegenTargets = Set.fromList [P.JS, P.Docs] }
+          go opts = compileWithOptions opts [modulePath] >>= assertSuccess
+          oneSecond = 10 ^ (6::Int) -- microseconds.
+
+      writeFile modulePath timestampA moduleContent1
+      go optsWithDocs `shouldReturn` moduleNames ["Module"]
+      writeFile modulePath timestampB moduleContent2
+      -- See Note [Sleeping to avoid flaky tests]
+      threadDelay oneSecond
+      go P.defaultOptions `shouldReturn` moduleNames ["Module"]
+      -- Since the existing docs.json is now outdated, the module should be
+      -- recompiled.
+      go optsWithDocs `shouldReturn` moduleNames ["Module"]
+
+    it "asdf recompiles if corefn is requested but not up to date" $ do
+      let modulePath = sourcesDir </> "Module.purs"
+          moduleContent1 = "module Module where\nx :: Int\nx = 1"
+          moduleContent2 = moduleContent1 <> "\ny :: Int\ny = 1"
+          optsCorefnOnly = P.defaultOptions { P.optionsCodegenTargets = Set.singleton P.CoreFn }
+          go opts = compileWithOptions opts [modulePath] >>= assertSuccess
+          oneSecond = 10 ^ (6::Int) -- microseconds.
+
+      writeFile modulePath timestampA moduleContent1
+      go optsCorefnOnly `shouldReturn` moduleNames ["Module"]
+      writeFile modulePath timestampB moduleContent2
+      -- See Note [Sleeping to avoid flaky tests]
+      threadDelay oneSecond
+      go P.defaultOptions `shouldReturn` moduleNames ["Module"]
+      -- Since the existing corefn.json is now outdated, the module should be
+      -- recompiled.
+      go optsCorefnOnly `shouldReturn` moduleNames ["Module"]
+    -- END ASDF
 
     it "does not necessarily recompile modules which were not part of the previous batch" $ do
       let mAPath = modulePath "A"
