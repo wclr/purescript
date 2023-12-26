@@ -1,10 +1,12 @@
 module FindUsage.Definition
   ( Usage(..)
+  , FData
   , usageId
   , usageId2
   , class UsageTC
   , use
   , ($%)
+  , type ($%)
   , toBeReexported
   ) where
 
@@ -31,7 +33,12 @@ loc = localId 10
 
 type Usages = Array Usage
 
-infixl 2 type Usage as <$%>
+infixl 2 type Usage as $%
 
 class UsageTC a where
   use :: Usage -> a
+
+foreign import data FData :: Type
+
+fData :: FData -> Int
+fData _ = 1

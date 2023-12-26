@@ -1,12 +1,8 @@
 module Language.PureScript.Ide.Usage
   ( findUsages
-  --, findReexportingModules
-  --, directDependants
-  --, eligibleModules
-  --, applySearch
   ) where
 
-import Protolude hiding (moduleName)
+import Protolude hiding (moduleName, trace)
 
 import Control.Lens (preview)
 import Data.Map qualified as Map
@@ -16,7 +12,7 @@ import Language.PureScript.Ide.State (getAllModules, getFileState)
 import Language.PureScript.Ide.Types
 import Language.PureScript.Ide.Util (identifierFromIdeDeclaration, namespaceForDeclaration)
 
-import qualified Debug.Trace as Debug
+import Debug.Trace (trace)
 
 -- |
 -- How we find usages, given an IdeDeclaration and the module it was defined in:
@@ -34,7 +30,7 @@ findUsages
 findUsages declaration moduleName = do
   ms <- getAllModules Nothing
   asts <- Map.map fst . fsModules <$> getFileState
-  let elig = eligibleModules (moduleName, declaration) ms asts
+  let elig = trace "elig" $ eligibleModules (moduleName, declaration) ms asts
   pure
     $ Map.mapMaybe nonEmpty
     $ Map.mapWithKey (\mn searches ->
@@ -80,8 +76,6 @@ searchesInModule declaration module' mn
           P.Hiding _ -> []
       _ -> []
 
-
-
 matchesRef :: IdeDeclaration -> P.DeclarationRef -> Bool
 matchesRef declaration ref =
   isJust $ matchedRefSpan declaration ref
@@ -122,6 +116,26 @@ matchedRefSpan declaration ref = case declaration of
   where
     mbIf sp cond = if cond then Just sp else Nothing
 
+matchesRef_ :: Ref -> P.DeclarationRef -> Bool
+matchesRef_  = (isJust .) . matchedRefSpan_ True
+
+-- | Determines whether an IdeDeclaration is referenced by a DeclarationRef
+-- and returns a source span of the reference.
+matchedRefSpan_ :: Bool -> Ref -> P.DeclarationRef -> Maybe P.SourceSpan
+matchedRefSpan_ implicitCtors ref dRef = case (ref, dRef) of
+  (TypeClassRef n, P.TypeClassRef ss dn) -> checkName ss n dn
+  (TypeOpRef n, P.TypeOpRef ss dn) -> checkName ss n dn
+  (ConstructorRef n, P.TypeRef ss _  ctors)
+    | implicitCtors, Nothing <- ctors -> Just ss
+    | Just ctors'<- ctors, n `elem` ctors' -> Just ss
+  (ValueRef n,P.ValueRef ss dn) -> checkName ss n dn
+  (ValueOpRef n,P.ValueOpRef ss dn) -> checkName ss n dn
+  (ModuleRef n, P.ModuleRef ss dn) -> checkName ss n dn
+  _ -> Nothing
+  where
+    checkName ss n dn = if n == dn then Just ss else Nothing
+
+
 -- | Filters modules that import the declaration (including reexports).
 eligibleModules
   :: (P.ModuleName, IdeDeclaration)
@@ -143,9 +157,114 @@ eligibleModules query@(moduleName, declaration) decls modules =
         foldMap (searchesInModule declaration m)
         importsToLookFor
 
--- | Finds all usages for a given `Search`es throughout a module.
+-- Simple ref structure more appropriate for search.
+data Ref
+  = TypeClassRef (P.ProperName 'P.ClassName)
+  | TypeOpRef (P.OpName 'P.TypeOpName)
+  | TypeRef (P.ProperName 'P.TypeName)
+  -- | ConstructorRef (P.ProperName 'P.TypeName) (P.ProperName 'P.ConstructorName)
+  | ConstructorRef (P.ProperName 'P.ConstructorName)
+  | ValueRef P.Ident
+  | ValueOpRef (P.OpName 'P.ValueOpName)
+  | ModuleRef P.ModuleName
+  deriving (Show, Eq, Ord)
+
+toRef :: IdeDeclaration -> Ref
+toRef = \case
+  IdeDeclValue v -> ValueRef (_ideValueIdent v)
+  IdeDeclType v -> TypeRef (_ideTypeName v)
+  IdeDeclTypeSynonym v -> TypeRef (_ideSynonymName v)
+  -- IdeDeclDataConstructor v ->  ConstructorRef (_ideDtorTypeName v) (_ideDtorName v)
+  IdeDeclDataConstructor v ->  ConstructorRef (_ideDtorName v)
+  IdeDeclTypeClass v -> TypeClassRef (_ideTCName v)
+  IdeDeclValueOperator v -> ValueOpRef (_ideValueOpName v)
+  IdeDeclTypeOperator v -> TypeOpRef (_ideTypeOpName v)
+  IdeDeclModule v -> ModuleRef v
+
 applySearches :: NonEmpty Search -> P.Module -> [P.SourceSpan]
-applySearches searches module_ =
+applySearches searches (P.Module _ _ _ decls _) =
+  foldMap findUsage decls
+  where
+    findUsage decl =
+      let (extr, _, _, _, _) = P.everythingWithScope goDecl goExpr goBinder mempty mempty
+       in extr mempty decl
+
+    -- To check data constructors we remove an origin type from it.
+    -- emptyName = P.ProperName ""
+    -- stripCtorType (ConstructorRef _ n) = ConstructorRef emptyName n
+    -- stripCtorType x = x
+
+    toSearched = (,) <$> P.getQual <*> P.disqualify
+    searches' = foldMap (Set.singleton . map toRef . toSearched) searches
+    --check' ss = (\x -> [ss | x]) . flip Set.member searches' . toSearched
+    check' ss n = [ss | Set.member (toSearched n) searches']
+
+    checkType = (. map TypeRef) . check'
+    checkTypeOp = (. map TypeOpRef) . check'
+    checkValue = (. map ValueRef) . check'
+    checkValueOp = (. map ValueOpRef) . check'
+    checkCtor = (. map ConstructorRef) . check'
+    checkClass = (. map TypeClassRef) . check'
+
+    foldCtor f (P.DataConstructorDeclaration _ _ vars) =
+      foldMap (f . snd) vars
+
+    constraintTypes =
+      foldMap (\c -> P.constraintArgs c <> P.constraintKindArgs c)
+
+    onTypes = P.everythingOnTypes (<>) $ \case
+      P.TypeConstructor (ss,_) n -> checkType ss n
+      P.TypeOp (ss,_) n -> checkTypeOp ss n
+      P.ConstrainedType (ss,_) c _ -> checkClass ss (P.constraintClass c)
+      _ -> mempty
+
+    goDecl _ = \case
+      P.TypeDeclaration t -> onTypes (P.tydeclType t)
+      P.DataDeclaration _ _ _ _ ctors -> foldMap (foldCtor onTypes) ctors
+      P.TypeSynonymDeclaration _ _ _ t -> onTypes t
+      P.KindDeclaration _ _ _ t -> onTypes t
+      P.FixityDeclaration (ss,_) (Right (P.TypeFixity _ tn _)) ->
+        checkType ss tn
+      P.FixityDeclaration (ss,_) (Left (P.ValueFixity _ (P.Qualified by val) _)) ->
+        either (checkValue ss . P.Qualified by) (checkCtor ss . P.Qualified by) val
+      P.TypeClassDeclaration _ _ _ cs _ _ ->
+        foldMap onTypes (constraintTypes cs)
+      P.TypeInstanceDeclaration _ (ss, _) _ _ _ cs tc sts _ ->
+        foldMap onTypes (constraintTypes cs <> sts) <> checkClass ss tc
+      P.ExternDeclaration _ _ st -> onTypes st
+
+      _ -> mempty
+      -- We can avoid passing it second type
+      -- P.ImportDeclaration _ _ it qual ->
+      --   case it of
+      --     P.Explicit refs ->
+      --       foldRefs refs
+      --     P.Hiding refs ->
+      --       foldRefs refs
+      --     _ ->
+      --       []
+      --   where
+      --     foldRefs =
+      --       foldMap (maybeToList . matchedRefSpan_ (P.disqualify search))
+
+    isLocal scope ident = P.LocalIdent ident `Set.member` scope
+    goExpr scope expr = case expr of
+      P.Var ss n
+        | P.isUnqualified n && isLocal scope (P.disqualify n) -> mempty
+        | otherwise -> checkValue ss n
+      P.Constructor ss n -> checkCtor ss n
+      P.Op ss n -> checkValueOp ss n
+      P.TypedValue _ _ t -> onTypes t
+      _ -> mempty
+
+    goBinder _ binder = case binder of
+      P.ConstructorBinder ss n _ -> checkCtor ss n
+      P.OpBinder ss n -> checkValueOp ss n
+      _ -> mempty
+
+-- | Finds all usages for a given `Search`es throughout a module.
+applySearches_ :: NonEmpty Search -> P.Module -> [P.SourceSpan]
+applySearches_ searches module_ =
   foldMap findUsageInDeclaration decls
   where
     --decls = seq (Debug.traceShowId $ (P.getModuleName module_, length searches) ) P.getModuleDeclarations module_
