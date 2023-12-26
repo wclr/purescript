@@ -67,18 +67,27 @@ resolveModuleImport env ie (mn, imps) = foldM go ie imps
      -> (SourceSpan, Maybe ImportDeclarationType, Maybe ModuleName)
      -> m Imports
   go ie' (ss, typ, impQual) = do
-    modExports <-
-      maybe
-        (throwError . errorMessage' ss . UnknownName . Qualified ByNullSourcePos $ ModName mn)
-        (return . envModuleExports)
-        (mn `M.lookup` env)
-    let impModules = importedModules ie'
-        qualModules = importedQualModules ie'
-        ie'' = ie' { importedModules = maybe (S.insert mn impModules) (const impModules) impQual
-                   , importedQualModules = maybe qualModules (`S.insert` qualModules) impQual
-                   }
-    resolveImport mn modExports ie'' impQual ss typ
-
+    -- modExports <-
+    --   maybe
+    --     (throwError . errorMessage' ss . UnknownName . Qualified ByNullSourcePos $ ModName mn)
+    --     (return . envModuleExports)
+    --     (mn `M.lookup` env)
+    -- let impModules = importedModules ie'
+    --     qualModules = importedQualModules ie'
+    --     ie'' = ie' { importedModules = maybe (S.insert mn impModules) (const impModules) impQual
+    --                , importedQualModules = maybe qualModules (`S.insert` qualModules) impQual
+    --                }
+    -- resolveImport mn modExports ie'' impQual ss typ
+    let mbModExports = envModuleExports <$> (mn `M.lookup` env)
+    case mbModExports of
+      Nothing -> pure ie
+      Just modExports -> do
+        let impModules = importedModules ie'
+            qualModules = importedQualModules ie'
+            ie'' = ie' { importedModules = maybe (S.insert mn impModules) (const impModules) impQual
+                      , importedQualModules = maybe qualModules (`S.insert` qualModules) impQual
+                      }
+        resolveImport mn modExports ie'' impQual ss typ
 -- |
 -- Extends the local environment for a module by resolving an import of another module.
 --
