@@ -422,7 +422,11 @@ externsJustTypeClass =
         , efFixities = []
         , efTypeFixities = []
         , efDeclarations =
-            [ EDValue {edValueName = Ident "mA", edValueType = ForAll (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a" (Just (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"})))) (ConstrainedType (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Constraint {constraintAnn = (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []), constraintClass = Qualified (ByModuleName (ModuleName "A")) (ProperName {runProperName = "CsA"}), constraintKindArgs = [], constraintArgs = [TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a"], constraintData = Nothing}) (TypeApp (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 33}}, []) (TypeApp (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 33}}, []) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 27}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 29}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))) (TypeVar (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 26}}, []) "a")) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 30}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 33}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))))) (Just (SkolemScope {runSkolemScope = 0}))}
+            [ EDValue
+                { edValueName = Ident "mA"
+                , edValueType =
+                    ForAll (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a" (Just (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"})))) (ConstrainedType (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Constraint {constraintAnn = (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []), constraintClass = Qualified (ByModuleName (ModuleName "A")) (ProperName {runProperName = "CsA"}), constraintKindArgs = [], constraintArgs = [TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a"], constraintData = Nothing}) (TypeApp (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 33}}, []) (TypeApp (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 33}}, []) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 27}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 29}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))) (TypeVar (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 25}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 26}}, []) "a")) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 30}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 33}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))))) (Just (SkolemScope {runSkolemScope = 0}))
+                }
             , EDType
                 { edTypeName = ProperName {runProperName = "CsA"}
                 , edTypeKind =
@@ -505,7 +509,15 @@ externsWithTCInherited =
                         (Just (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))))
                         ( ConstrainedType
                             (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, [])
-                            (Constraint {constraintAnn = (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []), constraintClass = Qualified (ByModuleName (ModuleName "B")) (ProperName {runProperName = "CsB"}), constraintKindArgs = [], constraintArgs = [TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a"], constraintData = Nothing})
+                            ( Constraint
+                                { constraintAnn =
+                                    (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, [])
+                                , constraintClass = Qualified (ByModuleName (ModuleName "B")) (ProperName {runProperName = "CsB"})
+                                , constraintKindArgs = []
+                                , constraintArgs = [TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a"]
+                                , constraintData = Nothing
+                                }
+                            )
                             ( TypeApp
                                 ( SourceSpan
                                     { spanName = "tests/purs/make/B.purs"
@@ -681,7 +693,14 @@ externsWithTCInherited =
                 , edInstanceName = Ident "csBInt"
                 , edInstanceForAll = []
                 , edInstanceKinds = []
-                , edInstanceTypes = [TypeConstructor (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 4, sourcePosColumn = 14}, spanEnd = SourcePos {sourcePosLine = 4, sourcePosColumn = 17}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))]
+                , edInstanceTypes =
+                    [ TypeConstructor
+                        (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 4, sourcePosColumn = 14}, spanEnd = SourcePos {sourcePosLine = 4, sourcePosColumn = 17}}, [])
+                        ( Qualified
+                            (ByModuleName (ModuleName "Prim"))
+                            (ProperName {runProperName = "Int"})
+                        )
+                    ]
                 , edInstanceConstraints = Just []
                 , -- , edInstanceChain = Just (ChainId ("tests/purs/make/B.purs", SourcePos {sourcePosLine = 4, sourcePosColumn = 1}))
                   edInstanceChainIndex = 0
@@ -828,7 +847,14 @@ externsTypeIntSynReExport =
                 )
                 (ExportSource {exportSourceImportedFrom = Just (ModuleName "A"), exportSourceDefinedIn = ModuleName "A"})
                 (TypeRef (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 14}}) (ProperName {runProperName = "IntSyn"}) (Just []))
-            , ModuleRef (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 19}}) (ModuleName "E")
+            , ModuleRef
+                ( SourceSpan
+                    { spanName = "tests/purs/make/B.purs"
+                    , spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 11}
+                    , spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 19}
+                    }
+                )
+                (ModuleName "E")
             ]
         , efImports = [ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Just (ModuleName "Prim")}, ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Nothing}, ExternsImport {eiModule = ModuleName "A", eiImportType = Implicit, eiImportedAs = Just (ModuleName "E")}]
         , efFixities = []
@@ -905,7 +931,30 @@ externsWithTCUsing =
         , efImports = [ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Just (ModuleName "Prim")}, ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Nothing}, ExternsImport {eiModule = ModuleName "B", eiImportType = Implicit, eiImportedAs = Nothing}, ExternsImport {eiModule = ModuleName "A", eiImportType = Implicit, eiImportedAs = Nothing}]
         , efFixities = []
         , efTypeFixities = []
-        , efDeclarations = [EDValue {edValueName = Ident "fn", edValueType = ForAll (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a2" (Just (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"})))) (ConstrainedType (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Constraint {constraintAnn = (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []), constraintClass = Qualified (ByModuleName (ModuleName "B")) (ProperName {runProperName = "CsB"}), constraintKindArgs = [], constraintArgs = [TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a2"], constraintData = Nothing}) (TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))) (TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a2")) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 39}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 42}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))))) Nothing}]
+        , efDeclarations =
+            [ EDValue
+                { edValueName = Ident "fn"
+                , edValueType =
+                    ForAll
+                        (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, [])
+                        "a2"
+                        (Just (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))))
+                        ( ConstrainedType
+                            (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, [])
+                            ( Constraint
+                                { constraintAnn = (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, [])
+                                , constraintClass =
+                                    Qualified (ByModuleName (ModuleName "B")) (ProperName {runProperName = "CsB"})
+                                , constraintKindArgs = []
+                                , constraintArgs = [TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a2"]
+                                , constraintData = Nothing
+                                }
+                            )
+                            (TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))) (TypeVar (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) "a2")) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 39}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 42}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))))
+                        )
+                        Nothing
+                }
+            ]
         , efSourceSpan = SourceSpan {spanName = "tests/purs/make/C.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 4, sourcePosColumn = 12}}
         }
 
@@ -924,6 +973,36 @@ externsSimple0 =
                 }
             ]
         , efSourceSpan = SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 13}}
+        }
+
+-- module A (AB) where\ntype SynA = Int\ndata AB = A SynA | B String\n
+externsDataExportedWithoutConstructors =
+    ExternsFile
+        { efVersion = "0.15.8"
+        , efModuleName = ModuleName "A"
+        , efExports =
+            [ TypeRef (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 28}}) (ProperName {runProperName = "AB"}) (Just [])
+            ]
+        , efImports = [ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Just (ModuleName "Prim")}, ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Nothing}]
+        , efFixities = []
+        , efTypeFixities = []
+        , efDeclarations =
+            [ EDType
+                { edTypeName = ProperName {runProperName = "AB"}
+                , edTypeKind = TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"}))
+                , edTypeDeclarationKind =
+                    DataType
+                        Data
+                        []
+                        [
+                            ( ProperName {runProperName = "A"}
+                            , [TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 13}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 17}}, []) (Qualified (ByModuleName (ModuleName "A")) (ProperName {runProperName = "SynA"}))]
+                            )
+                        , (ProperName {runProperName = "B"}, [TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 22}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 28}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "String"}))])
+                        ]
+                }
+            ]
+        , efSourceSpan = SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 28}}
         }
 
 externsABC =
@@ -963,7 +1042,9 @@ externsABC =
                             ( ProperName {runProperName = "A"}
                             ,
                                 [ TypeConstructor
-                                    (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 14}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 17}}, [])
+                                    ( SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 14}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 17}}
+                                    , []
+                                    )
                                     ( Qualified
                                         (ByModuleName (ModuleName "Prim"))
                                         ( ProperName
@@ -1044,6 +1125,33 @@ externsABCReexport =
         , efDeclarations = []
         , efSourceSpan = SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 23}}
         }
+
+-- module B (module E) where\nimport A (ABC(..)) as E\n
+externsABCReexportsAllCtors =
+    ExternsFile
+        { efVersion = "0.15.8"
+        , efModuleName = ModuleName "B"
+        , efExports =
+            [ ReExportRef
+                (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 24}})
+                (ExportSource {exportSourceImportedFrom = Just (ModuleName "A"), exportSourceDefinedIn = ModuleName "A"})
+                ( TypeRef
+                    (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 24}})
+                    (ProperName {runProperName = "ABC"})
+                    ( Just
+                        [ ProperName {runProperName = "A"}
+                        , ProperName {runProperName = "B"}
+                        ]
+                    )
+                )
+            , ModuleRef (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 19}}) (ModuleName "E")
+            ]
+        , efImports = [ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Just (ModuleName "Prim")}, ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Nothing}, ExternsImport {eiModule = ModuleName "A", eiImportType = Explicit [TypeRef (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 18}}) (ProperName {runProperName = "ABC"}) Nothing], eiImportedAs = Just (ModuleName "E")}]
+        , efFixities = []
+        , efTypeFixities = []
+        , efDeclarations = []
+        , efSourceSpan = SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 24}}
+        }
 externsABCImport =
     ExternsFile
         { efVersion = "0.15.8"
@@ -1111,9 +1219,32 @@ externsRoles =
         , efSourceSpan = SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 34}}
         }
 
--- >>> efDeclarations tсWithInstance1 == efDeclarations tсWithInstance2
-
--- >>> 1 == 1
+externsFixity =
+    ExternsFile
+        { efVersion = "0.15.8"
+        , efModuleName = ModuleName "A"
+        , efExports = [TypeRef (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 18}}) (ProperName {runProperName = "ADT"}) (Just [ProperName {runProperName = "A"}, ProperName {runProperName = "B"}]), ValueOpRef (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 18}}) (OpName {runOpName = ":+:"})]
+        , efImports = [ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Just (ModuleName "Prim")}, ExternsImport {eiModule = ModuleName "Prim", eiImportType = Implicit, eiImportedAs = Nothing}]
+        , efFixities =
+            [ ExternsFixity
+                { efAssociativity = Infixl
+                , efPrecedence = 5
+                , efOperator =
+                    OpName {runOpName = ":+:"}
+                , efAlias =
+                    Qualified
+                        (ByModuleName (ModuleName "A"))
+                        (Right (ProperName {runProperName = "A"}))
+                }
+            ]
+        , efTypeFixities = []
+        , efDeclarations =
+            [ EDType {edTypeName = ProperName {runProperName = "ADT"}, edTypeKind = TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Type"})), edTypeDeclarationKind = DataType Data [] [(ProperName {runProperName = "A"}, [TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 14}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 17}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"}))]), (ProperName {runProperName = "B"}, [TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 22}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 28}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "String"}))])]}
+            , EDDataConstructor {edDataCtorName = ProperName {runProperName = "A"}, edDataCtorOrigin = Data, edDataCtorTypeCtor = ProperName {runProperName = "ADT"}, edDataCtorType = TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 14}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 17}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Int"})))) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "A")) (ProperName {runProperName = "ADT"}))), edDataCtorFields = [Ident "value0"]}
+            , EDDataConstructor {edDataCtorName = ProperName {runProperName = "B"}, edDataCtorOrigin = Data, edDataCtorTypeCtor = ProperName {runProperName = "ADT"}, edDataCtorType = TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeApp (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"}))) (TypeConstructor (SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 2, sourcePosColumn = 22}, spanEnd = SourcePos {sourcePosLine = 2, sourcePosColumn = 28}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "String"})))) (TypeConstructor (SourceSpan {spanName = "", spanStart = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}, spanEnd = SourcePos {sourcePosLine = 0, sourcePosColumn = 0}}, []) (Qualified (ByModuleName (ModuleName "A")) (ProperName {runProperName = "ADT"}))), edDataCtorFields = [Ident "value0"]}
+            ]
+        , efSourceSpan = SourceSpan {spanName = "tests/purs/make/A.purs", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 18}}
+        }
 
 -- PARSED CONTENT
 
@@ -1281,6 +1412,61 @@ parsedReexportMethod =
             ]
         )
 
+-- parseFromFile "fp" "module B where import A (ABC(..)) as E"
+parsedReexportABCAllCtros =
+    Module
+        ( SourceSpan
+            { spanName = "fp"
+            , spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}
+            , spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 39}
+            }
+        )
+        []
+        (ModuleName "B")
+        [ ImportDeclaration
+            ( SourceSpan
+                { spanName =
+                    "fp"
+                , spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 16}
+                , spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 39}
+                }
+            , []
+            )
+            (ModuleName "A")
+            ( Explicit
+                [ TypeRef
+                    (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 26}, spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 33}})
+                    (ProperName {runProperName = "ABC"})
+                    Nothing
+                ]
+            )
+            (Just (ModuleName "E"))
+        ]
+        Nothing
+
+-- if imports ABC(..) ctors is Nothing
+-- if imports ABC ctors is Just([])
+
+-- parseFromFile "fp" "module B where import A (ABC) as E"
+parsedReexportABCWithoutCtros =
+    Module
+        (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 35}})
+        []
+        (ModuleName "B")
+        [ ImportDeclaration
+            (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 16}, spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 35}}, [])
+            (ModuleName "A")
+            ( Explicit
+                [ TypeRef
+                    (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 1, sourcePosColumn = 26}, spanEnd = SourcePos {sourcePosLine = 1, sourcePosColumn = 29}})
+                    (ProperName {runProperName = "ABC"})
+                    (Just [])
+                ]
+            )
+            (Just (ModuleName "E"))
+        ]
+        Nothing
+
 -- >>> parseFromFile "fp" "module B where\nimport A\nclass CsA a <= CsB a where mB :: a -> Int"
 classesHier =
     Module
@@ -1313,7 +1499,21 @@ classesHier =
             )
             (ProperName {runProperName = "CsB"})
             [("a", Nothing)]
-            [Constraint {constraintAnn = (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 7}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 12}}, []), constraintClass = Qualified (BySourcePos (SourcePos {sourcePosLine = 0, sourcePosColumn = 0})) (ProperName {runProperName = "CsA"}), constraintKindArgs = [], constraintArgs = [TypeVar (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 12}}, []) "a"], constraintData = Nothing}]
+            [ Constraint
+                { constraintAnn = (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 7}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 12}}, [])
+                , constraintClass =
+                    Qualified
+                        (BySourcePos (SourcePos {sourcePosLine = 0, sourcePosColumn = 0}))
+                        (ProperName {runProperName = "CsA"})
+                , constraintKindArgs = []
+                , constraintArgs =
+                    [ TypeVar
+                        (SourceSpan {spanName = "fp", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 11}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 12}}, [])
+                        "a"
+                    ]
+                , constraintData = Nothing
+                }
+            ]
             []
             [ TypeDeclaration
                 ( TypeDeclarationData
@@ -1338,3 +1538,60 @@ classesHier =
             ]
         ]
         Nothing
+
+-- fn :: forall a. A.A a => a -> Int
+typeDeclarationData =
+    TypeDeclarationData
+        { tydeclSourceAnn = (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 1}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 34}}, [])
+        , tydeclIdent = Ident "fn"
+        , tydeclType =
+            ForAll
+                ( SourceSpan
+                    { spanName = "tests/purs/make/B.purs"
+                    , spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 7}
+                    , spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 34}
+                    }
+                , []
+                )
+                "a"
+                Nothing
+                ( ConstrainedType
+                    ( SourceSpan
+                        { spanName = "tests/purs/make/B.purs"
+                        , spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 17}
+                        , spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 34}
+                        }
+                    , []
+                    )
+                    ( Constraint
+                        { constraintAnn = (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 17}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 22}}, [])
+                        , constraintClass =
+                            Qualified
+                                (ByModuleName (ModuleName "A"))
+                                (ProperName {runProperName = "A"})
+                        , constraintKindArgs = []
+                        , constraintArgs = [TypeVar (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 21}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 22}}, []) "a"]
+                        , constraintData = Nothing
+                        }
+                    )
+                    ( TypeApp
+                        (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 26}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 34}}, [])
+                        ( TypeApp
+                            (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 26}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 34}}, [])
+                            (TypeConstructor (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 28}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 30}}, []) (Qualified (ByModuleName (ModuleName "Prim")) (ProperName {runProperName = "Function"})))
+                            ( TypeVar
+                                (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 26}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 27}}, [])
+                                "a"
+                            )
+                        )
+                        ( TypeConstructor
+                            (SourceSpan {spanName = "tests/purs/make/B.purs", spanStart = SourcePos {sourcePosLine = 3, sourcePosColumn = 31}, spanEnd = SourcePos {sourcePosLine = 3, sourcePosColumn = 34}}, [])
+                            ( Qualified
+                                (BySourcePos (SourcePos {sourcePosLine = 0, sourcePosColumn = 0}))
+                                (ProperName {runProperName = "Int"})
+                            )
+                        )
+                    )
+                )
+                Nothing
+        }
