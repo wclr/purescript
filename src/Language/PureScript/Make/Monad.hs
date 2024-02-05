@@ -8,7 +8,6 @@ module Language.PureScript.Make.Monad
   , getCurrentTime
   , setTimestamp
   , readTextFile
-  , readTextFile'
   , readJSONFile
   , readJSONFileIO
   , readCborFile
@@ -51,7 +50,7 @@ import System.Directory (createDirectoryIfMissing, getModificationTime, setModif
 import System.Directory qualified as Directory
 import System.FilePath (takeDirectory)
 import System.IO.Error (tryIOError, isDoesNotExistError)
-import System.IO.UTF8 (readUTF8FileT, readUTF8FileT')
+import System.IO.UTF8 (readUTF8FileT)
 
 -- | A monad for running make actions
 newtype Make a = Make
@@ -108,12 +107,6 @@ readTextFile :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m Text
 readTextFile path =
   makeIO ("read file: " <> Text.pack path) $
     readUTF8FileT path
-
--- | Read a text file version that returns byte string along with decoded text data.
-readTextFile' :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m (B.ByteString, Text)
-readTextFile' path =
-  makeIO ("read file: " <> Text.pack path) $
-    readUTF8FileT' path
 
 -- | Read a JSON file in the 'Make' monad, returning 'Nothing' if the file does
 -- not exist or could not be parsed. Errors are captured using the 'MonadError'
