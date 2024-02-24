@@ -55,6 +55,7 @@ import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.CoreFn qualified as CF
 import System.Directory (doesFileExist)
 import System.FilePath (replaceExtension)
+import Debug.Trace (trace)
 
 -- | Rebuild a single module.
 --
@@ -337,7 +338,15 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
             maySkipBuild (Just (idx, cnt)) >>= maybe doBuild pure
           return $ BuildJobSucceeded (pwarnings' <> warnings) exts diff
 
-        Nothing -> return BuildJobSkipped
+        -- If we got Nothing for deps externs, that means one of the deps failed
+        -- to compile. Though if we have a previous built result we will keep to
+        -- avoid potentially unnecessary recompilation next time.
+        Nothing -> return $
+          case BuildPlan.getPrevResult buildPlan moduleName of
+            Just (_, exts) ->
+              BuildJobSucceeded (MultipleErrors []) exts (Just (emptyDiff moduleName))
+            Nothing ->
+              BuildJobSkipped
 
     BuildPlan.markComplete buildPlan moduleName result
 
