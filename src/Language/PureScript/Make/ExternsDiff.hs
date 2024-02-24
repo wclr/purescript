@@ -16,7 +16,6 @@ import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.Declarations.ChainId (ChainId (..))
 import Language.PureScript.Constants.Prim (primModules)
 import Language.PureScript.Crash (internalError)
-import Language.PureScript.Environment (isDictTypeName)
 import Language.PureScript.Environment qualified as P
 import Language.PureScript.Externs qualified as P
 import Language.PureScript.Names (ModuleName)
@@ -136,9 +135,7 @@ getChanged newExts oldExts depsDiffsMap =
     -- combining Declarations, Fixities and Type Fixities - as they are
     -- separated in externs we handle them separately. We don't care about added things.
     (_, removed, changed, unchangedRefs) =
-      foldl
-        zipTuple4
-        (mempty, mempty, mempty, mempty)
+      fold
         [ declsSplit
         , splitRefs (getFixities newExts) (getFixities oldExts) (pure . externsFixityToRef fixityCtx)
         , splitRefs (getTypeFixities newExts) (getTypeFixities oldExts) (pure . externsTypeFixityToRef)
@@ -258,7 +255,7 @@ checkUsage searches decls = foldMap findUsage decls /= mempty
     stripCtorType x = x
 
     searches' = S.map (map stripCtorType) searches
-    check = (\x -> [x | x]) . flip S.member searches' . toSearched
+    check = Any . flip S.member searches' . toSearched
 
     checkType = check . map TypeRef
     checkTypeOp = check . map TypeOpRef
@@ -366,10 +363,6 @@ isEmpty (ExternsDiff _ refs)
 
 type Tuple4 m a = (m a, m a, m a, m a)
 
-zipTuple4 :: Monoid (m a) => Tuple4 m a -> Tuple4 m a -> Tuple4 m a
-zipTuple4 (f1, s1, t1, fo1) (f2, s2, t2, fo2) =
-  (f1 <> f2, s1 <> s2, t1 <> t2, fo1 <> fo2)
-
 -- | Returns refs as a tuple of four (added, removed, changed, unchanged).
 splitRefs :: Ord r => Eq a => [a] -> [a] -> (a -> Maybe r) -> Tuple4 [] r
 splitRefs new old toRef =
@@ -382,8 +375,8 @@ splitRefs new old toRef =
     go ref decl (a, r, c, u) = case M.lookup ref newMap of
       Nothing -> (a, r <> [ref], c, u)
       Just newDecl
-        | decl /= newDecl -> (a, r, c <> [ref], u)
-        | otherwise -> (a, r, c, u <> [ref])
+        | decl /= newDecl -> (a, r, ref : c, u)
+        | otherwise -> (a, r, c, ref : u)
 
 -- | Traverses the type and finds all the refs within.
 typeDeps :: P.Type a -> S.Set (ModuleName, Ref)
@@ -428,14 +421,14 @@ externsTypeFixityToRef (P.ExternsTypeFixity _ _ n alias) =
 externsDeclarationToRef :: ModuleName -> P.ExternsDeclaration -> Maybe RefWithDeps
 externsDeclarationToRef moduleName = \case
   P.EDType n t tk
-    | isDictTypeName n -> Nothing
+    | P.isDictTypeName n -> Nothing
     | otherwise -> Just (TypeRef n, typeDeps t <> typeKindDeps tk)
   --
   P.EDTypeSynonym n args t ->
     Just (TypeRef n, typeDeps t <> foldArgs args)
   --
   P.EDDataConstructor n _ tn t _
-    | isDictTypeName n -> Nothing
+    | P.isDictTypeName n -> Nothing
     | otherwise ->
         Just
           ( ConstructorRef tn n
