@@ -22,3 +22,10 @@ excludeFiles = Opts.strOption $
   <> Opts.metavar "GLOB"
   <> Opts.help "A glob of .purs files to exclude from the input .purs files."
 
+logFile :: Opts.Parser FilePath
+logFile = Opts.strOption $
+     Opts.short 'l'
+  <> Opts.long "log-file"
+  <> Opts.value "output"
+  <> Opts.showDefault
+  <> Opts.help "A log file for writing progress."

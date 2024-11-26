@@ -1,6 +1,10 @@
 module Language.PureScript.Make.ExternsDiff
   ( ExternsDiff
+  , RefStatus(..)
+  , DiffRef(..)
+  , Ref(..)
   , emptyDiff
+  , getRefs
   , diffExterns
   , checkDiffs
   ) where
@@ -36,10 +40,10 @@ data Ref
   | ValueOpRef (P.OpName 'P.ValueOpName)
   | -- Instance ref points to the class and types defined in the same module.
     TypeInstanceRef P.Ident (ModuleName, P.ProperName 'P.ClassName) [P.ProperName 'P.TypeName]
-  deriving (Show, Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 data RefStatus = Removed | Updated
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 type RefWithDeps = (Ref, S.Set (ModuleName, Ref))
 
@@ -49,7 +53,10 @@ type ModuleRefsMap = Map ModuleName (Set Ref)
 
 data ExternsDiff = ExternsDiff
   {edModuleName :: ModuleName, edRefs :: Map Ref RefStatus}
-  deriving (Show)
+  deriving (Eq, Ord, Show)
+
+getRefs :: ExternsDiff -> Map Ref RefStatus
+getRefs (ExternsDiff _ refs)=  refs
 
 -- | Empty diff means no effective difference between externs.
 emptyDiff :: P.ModuleName -> ExternsDiff
@@ -196,6 +203,7 @@ getAffectedLocal modName diffsMap unchangedRefs =
         map fst $
           filter (any (flip elem (fst <$> affectedByChanged)) . snd) refsGraph
 
+-- Compares two externs file versions using list with diffs of dependencies.
 diffExterns :: P.ExternsFile -> P.ExternsFile -> [ExternsDiff] -> ExternsDiff
 diffExterns newExts oldExts depsDiffs =
   ExternsDiff modName $
@@ -221,27 +229,100 @@ diffExterns newExts oldExts depsDiffs =
     affectedLocalRefs =
       M.fromSet (const Updated) $ getAffectedLocal modName diffsMapWithLocal unchangedRefs
 
--- Checks if the externs diffs effect the module (the module uses any diff's
--- entries). True if uses, False if not.
-checkDiffs :: P.Module -> [ExternsDiff] -> Bool
-checkDiffs (P.Module _ _ _ decls exports) diffs
-  | all isEmpty diffs = False
-  | isNothing mbSearch = True
-  | null searches = False
-  | otherwise = checkReExports || checkUsage searches decls
-  where
-    mbSearch = makeSearches decls diffs
-    searches = fromMaybe S.empty mbSearch
+-- This type defines a reason for module to be rebuilt. It contains the fhe
+-- first found reference to changed elements.
+data DiffRef
+    = ImportedRef (ModuleName, Ref)
+    | ReExportedRef (ModuleName, Ref)
+    | UsedRef (ModuleName, Ref)
+    deriving (Show, Eq, Ord)
 
+-- Checks if the module effectively uses any of diff's refs.
+checkDiffs :: P.Module -> [ExternsDiff] -> Maybe DiffRef
+checkDiffs (P.Module _ _ _ decls exports) diffs
+  | all isEmpty diffs = Nothing
+  | otherwise = case makeSearches_ decls diffs of
+      Left r -> Just (ImportedRef r)
+      Right searches
+        | null searches -> Nothing
+        | otherwise ->
+            (ReExportedRef <$> checkReExports searches)
+              <|> (UsedRef <$> checkUsage searches decls)
+  where
     -- Check if the module reexports any of searched refs.
-    checkReExports = flip (maybe False) exports $ any $ \case
-      P.ModuleRef _ mn -> not . null $ S.filter ((== Just mn) . fst) searches
-      _ -> False
+    checkReExports searches =
+      map (\(mn, _, ref) -> (mn, ref)) $
+        exports >>=
+         listToMaybe . foldMap
+          ( \case
+              P.ModuleRef _ mn -> maybeToList $ find (\(_, mn' ,_) -> mn' == Just mn ) searches
+              _ -> []
+          )
+
+-- Takes a set of refs to search in module's declarations,.
+-- Goes though the module and searches for the first usage of any.
+checkUsage :: Set (ModuleName, Maybe ModuleName, Ref) -> [P.Declaration] -> Maybe (ModuleName, Ref)
+checkUsage searches decls = listToMaybe anyUsages
+  where
+    -- Two traversals: one to pick up usages of types, one for the rest.
+    anyUsages =
+      foldMap checkUsageInTypes decls
+        <> foldMap checkOtherUsages decls
+
+    -- To check data constructors we remove an origin type from it (see `checkCtor`).
+    searches' = S.map (map stripCtorType) searches
+
+    -- To check data constructors we remove an origin type from it.
+    emptyName = P.ProperName ""
+    stripCtorType (ConstructorRef _ n) = ConstructorRef emptyName n
+    stripCtorType x = x
+
+    -- Check if a declaration is searchable element and map it to result.
+    check q = maybeToList $ (\(mn, _, ref) -> (mn, ref)) <$>
+        find (\(_, qual, ref) -> (qual, ref) == (P.getQual q, P.disqualify q)) searches'
+
+    checkType = check . map TypeRef
+    checkTypeOp = check . map TypeOpRef
+    checkValue = check . map ValueRef
+    checkValueOp = check . map ValueOpRef
+    checkCtor = check . map (ConstructorRef emptyName)
+    checkClass = check . map TypeClassRef
+
+    -- A nested traversal: pick up types in the module then traverse the structure of the types
+    (checkUsageInTypes, _, _, _, _) =
+      P.accumTypes $ P.everythingOnTypes (<>) $ \case
+        P.TypeConstructor _ n -> checkType n
+        P.TypeOp _ n -> checkTypeOp n
+        P.ConstrainedType _ c _ -> checkClass (P.constraintClass c)
+        _ -> mempty
+
+    checkOtherUsages =
+      let (extr, _, _, _, _) = P.everythingWithScope goDecl goExpr goBinder mempty mempty
+       in extr mempty
+
+    goDecl _ = \case
+      P.TypeInstanceDeclaration _ _ _ _ _ _ tc _ _ ->
+        checkClass tc
+      _ -> mempty
+
+    isLocal scope ident = P.LocalIdent ident `S.member` scope
+    goExpr scope expr = case expr of
+      P.Var _ n
+        | P.isUnqualified n && isLocal scope (P.disqualify n) -> mempty
+        | otherwise -> checkValue n
+      P.Constructor _ n -> checkCtor n
+      P.Op _ n -> checkValueOp n
+      _ -> mempty
+
+    goBinder _ binder = case binder of
+      P.ConstructorBinder _ n _ -> checkCtor n
+      P.OpBinder _ n -> checkValueOp n
+      _ -> mempty
 
 -- Goes though the module and try to find any usage of the refs.
 -- Takes a set of refs to search in module's declarations, if found returns True.
-checkUsage :: Set (Maybe ModuleName, Ref) -> [P.Declaration] -> Bool
-checkUsage searches decls = foldMap findUsage decls /= mempty
+checkUsage_ :: Set (Maybe ModuleName, Ref) -> [P.Declaration] -> Bool
+checkUsage_ searches decls = foldMap findUsage decls /= mempty
   where
     findUsage decl =
       let (extr, _, _, _, _) = P.everythingWithScope goDecl goExpr goBinder mempty mempty
@@ -307,15 +388,57 @@ checkUsage searches decls = foldMap findUsage decls /= mempty
       _ -> mempty
 
 -- | Traverses imports and returns a set of refs to be searched though the
--- module. Returns Nothing if removed refs found in imports (no need to search
+-- module. Returns Left with the first removed ref found in imports (no need to search
 -- through the module - the module needs to be recompiled). If an empty set is
 -- returned then no changes apply to the module.
-makeSearches :: [P.Declaration] -> [ExternsDiff] -> Maybe (Set (Maybe ModuleName, Ref))
+makeSearches_ :: [P.Declaration] -> [ExternsDiff] -> Either (ModuleName, Ref) (Set (ModuleName, Maybe ModuleName, Ref))
+makeSearches_ decls depsDiffs =
+  foldM go mempty decls
+  where
+    diffsMap = M.fromList (map (liftM2 (,) edModuleName edRefs) depsDiffs)
+    searchRef = find . flip S.member
+    -- Add data constructors to refs if all are implicitly imported using (..).
+    getCtor n (ConstructorRef tn _) = tn == n
+    getCtor _ _ = False
+    getCtors n = M.keys . M.filterWithKey (const . getCtor n)
+    addCtors mn (P.TypeRef _ n Nothing) = maybe [] (getCtors n) (M.lookup mn diffsMap)
+    addCtors _ _ = []
+    getRefs = (toRefs <>) . addCtors
+
+    go s (P.ImportDeclaration _ mn dt qual)
+      -- We return Nothing if we encounter removed refs in imports.
+      | Just diffs <- M.lookup mn diffsMap
+      , removed <- M.keysSet $ M.filter isRefRemoved diffs =
+          fmap ((s <>) . S.map (mn, qual,) . M.keysSet) $ case dt of
+            P.Explicit dRefs
+              | Just ref <- searchRef removed refs -> Left (mn, ref)
+              | otherwise ->
+                  -- Search only refs encountered in the import.
+                  Right $ M.filterWithKey (const . flip elem refs) diffs
+              where
+                refs = foldMap (getRefs mn) dRefs
+            P.Hiding dRefs
+              | Just ref <- searchRef removed refs -> Left (mn, ref)
+              | otherwise ->
+                  -- Search only refs not encountered in the import.
+                  Right $ M.filterWithKey (const . not . flip elem refs) diffs
+              where
+                refs = foldMap (getRefs mn) dRefs
+            -- Search all changed refs.
+            P.Implicit -> Right diffs
+    go s _ = Right s
+
+
+-- | Traverses imports and returns a set of refs to be searched though the
+-- module. Returns Left with the first removed ref found in imports (no need to search
+-- through the module - the module needs to be recompiled). If an empty set is
+-- returned then no changes apply to the module.
+makeSearches :: [P.Declaration] -> [ExternsDiff] -> Either (ModuleName, Ref) (Set (Maybe ModuleName, Ref))
 makeSearches decls depsDiffs =
   foldM go mempty decls
   where
     diffsMap = M.fromList (map (liftM2 (,) edModuleName edRefs) depsDiffs)
-
+    searchRef = find . flip S.member
     -- Add data constructors to refs if all are implicitly imported using (..).
     getCtor n (ConstructorRef tn _) = tn == n
     getCtor _ _ = False
@@ -330,22 +453,22 @@ makeSearches decls depsDiffs =
       , removed <- M.keysSet $ M.filter isRefRemoved diffs =
           fmap ((s <>) . S.map (qual,) . M.keysSet) $ case dt of
             P.Explicit dRefs
-              | any (flip S.member removed) refs -> Nothing
+              | Just ref <- searchRef removed refs -> Left (mn, ref)
               | otherwise ->
                   -- Search only refs encountered in the import.
-                  Just $ M.filterWithKey (const . flip elem refs) diffs
+                  Right $ M.filterWithKey (const . flip elem refs) diffs
               where
                 refs = foldMap (getRefs mn) dRefs
             P.Hiding dRefs
-              | any (flip S.member removed) refs -> Nothing
+              | Just ref <- searchRef removed refs -> Left (mn, ref)
               | otherwise ->
                   -- Search only refs not encountered in the import.
-                  Just $ M.filterWithKey (const . not . flip elem refs) diffs
+                  Right $ M.filterWithKey (const . not . flip elem refs) diffs
               where
                 refs = foldMap (getRefs mn) dRefs
             -- Search all changed refs.
-            P.Implicit -> Just diffs
-    go s _ = Just s
+            P.Implicit -> Right diffs
+    go s _ = Right s
 
 toRefs :: P.DeclarationRef -> [Ref]
 toRefs = \case
