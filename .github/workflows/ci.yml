@@ -2,9 +2,9 @@ name: "CI"
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "wclr-release-test" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "wclr-release-test" ]
     paths:
       - .github/workflows/**/*.yml
       - app/**/*
@@ -31,7 +31,7 @@ defaults:
     shell: "bash"
 
 env:
-  CI_PRERELEASE: "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}"
+  CI_PRERELEASE: "${{ github.event_name == 'push' && github.ref == 'refs/heads/wclr-release-test' }}"
   CI_RELEASE: "${{ github.event_name == 'release' }}"
   STACK_VERSION: "3.3.1"
 
