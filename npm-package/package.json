@@ -1,5 +1,5 @@
 {
-  "name": "wclr/purescript",
+  "name": "@wclr/purescript",
   "version": "0.15.15",
   "license": "ISC",
   "description": "PureScript wrapper that makes it available as a local dependency",
