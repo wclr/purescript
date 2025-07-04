@@ -141,7 +141,7 @@ then
       build_version=${build_version#v}
     else # (current version has not been published)
       build_version=$package_version
-      echo "do-not-prerelease=true" >> $GITHUB_OUTPUT
+      # echo "do-not-prerelease=true" >> $GITHUB_OUTPUT
     fi
   fi
 
