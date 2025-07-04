@@ -31,7 +31,8 @@ defaults:
     shell: "bash"
 
 env:
-  CI_PRERELEASE: "${{ github.event_name == 'push' && github.ref == 'refs/heads/wclr-release-test' }}"
+  # CI_PRERELEASE: "${{ github.event_name == 'push' && github.ref == 'refs/heads/wclr-release-test' }}"
+  CI_PRERELEASE: "true"
   CI_RELEASE: "${{ github.event_name == 'release' }}"
   STACK_VERSION: "3.3.1"
 
