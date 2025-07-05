@@ -191,5 +191,3 @@ fi
 popd
 
 (echo "::endgroup::") 2>/dev/null
-
-#
