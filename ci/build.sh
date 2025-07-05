@@ -43,23 +43,23 @@ fi
 
 if [ "$CI_PRERELEASE" = "true" ]
 then
-  # git fetch --depth=1 origin "v$(npm view @wclr/purescript@next version)"
+  git fetch --depth=1 origin "v$(npm view @wclr/purescript version)"
 
-  # # List of files/folders to use to detect if a new prerelease should be
-  # # issued. Any path that could contain files that affect the built bundles or
-  # # the published npm package should be included here. Paths that no longer
-  # # exist should be deleted. A false positive is not as big a deal as a false
-  # # negative, so err on the side of including stuff.
-  # if git diff --quiet FETCH_HEAD HEAD -- \
-  #   .github/workflows app bundle ci npm-package src \
-  #   purescript.cabal stack.yaml
-  # then
-  #   echo "Skipping prerelease because no input affecting the published package was"
-  #   echo "changed since the last prerelease"
-  #   echo "do-not-prerelease=true" >> $GITHUB_OUTPUT
-  # else
+  # List of files/folders to use to detect if a new prerelease should be
+  # issued. Any path that could contain files that affect the built bundles or
+  # the published npm package should be included here. Paths that no longer
+  # exist should be deleted. A false positive is not as big a deal as a false
+  # negative, so err on the side of including stuff.
+  if git diff --quiet FETCH_HEAD HEAD -- \
+    .github/workflows app bundle ci npm-package src \
+    purescript.cabal stack.yaml
+  then
+    echo "Skipping prerelease because no input affecting the published package was"
+    echo "changed since the last prerelease"
+    echo "do-not-prerelease=true" >> $GITHUB_OUTPUT
+  else
     do_prerelease=true
-  # fi
+  fi
 fi
 
 package_version=$(node -pe 'require("./npm-package/package.json").version')
@@ -191,5 +191,3 @@ fi
 popd
 
 (echo "::endgroup::") 2>/dev/null
-
-#
