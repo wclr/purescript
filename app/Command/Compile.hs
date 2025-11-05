@@ -78,9 +78,9 @@ compile PSCMakeOptions{..} = do
     ms <- CST.parseModulesFromFiles id moduleFiles
     let filePathMap = M.fromList $ map (\(fp, pm) -> (P.getModuleName $ CST.resPartial pm, Right fp)) ms
     foreigns <- inferForeignModules filePathMap
-    logProgress <- P.progressWithFile logFile cleanFile
+    logProgress <- progressWithFile logFile cleanFile
     let makeActions = (buildMakeActions pscmOutputDir filePathMap foreigns pscmUsePrefix)
-            { P.progress = (*>) <$> P.printProgress <*> logProgress }
+            { P.progress = (*>) <$> printProgress <*> logProgress }
     P.make_ makeActions (map snd ms)
   printWarningsAndErrors (P.optionsVerboseErrors pscmOpts) pscmJSONErrors moduleFiles makeWarnings makeErrors
   exitSuccess

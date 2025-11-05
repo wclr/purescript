@@ -4,7 +4,7 @@ module Language.PureScript.Make.Actions
   , RebuildReason(..)
   , ProgressMessage(..)
   , renderProgressMessage
-  , renderProgressExtensiveMessage
+  , renderProgressVerboseMessage
   , printProgress
   , progressWithFile
   , buildMakeActions
@@ -18,7 +18,7 @@ module Language.PureScript.Make.Actions
 
 import Prelude
 
-import Control.Monad (guard, unless, when)
+import Control.Monad (guard, unless, void, when)
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Reader (asks)
@@ -37,7 +37,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Text.Encoding qualified as TE
 import Data.Time (formatTime, defaultTimeLocale)
-import Data.Time.Clock (UTCTime, NominalDiffTime, nominalDiffTimeToSeconds)
+import Data.Time.Clock (UTCTime, NominalDiffTime)
 import Data.Version (showVersion)
 import Language.JavaScript.Parser qualified as JS
 import Language.PureScript.AST (SourcePos(..))
@@ -50,7 +50,7 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Docs.Prim qualified as Docs.Prim
 import Language.PureScript.Docs.Types qualified as Docs
-import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage', nonEmpty, findHint, ErrorMessage (..), onErrorMessages, replaceSpanName, runMultipleErrors)
+import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage', nonEmpty, ErrorMessage (..), onErrorMessages, replaceSpanName, runMultipleErrors)
 import Language.PureScript.Externs (ExternsFile, externsFileName)
 import Language.PureScript.Make.Monad (Make, copyFile, getCurrentTime, getTimestamp, getTimestampMaybe, hashFile, makeIO, readExternsFile, readWarningsFile, readJSONFile, readTextFile, setTimestamp, writeCborFile, writeJSONFile, writeTextFile, removeFileIfExists)
 import Language.PureScript.Make.Cache (CacheDb, ContentHash, cacheDbIsCurrentVersion, fromCacheDbVersioned, normaliseForCache, toCacheDbVersioned)
@@ -58,7 +58,6 @@ import Language.PureScript.Make.ExternsDiff qualified as ED
 import Language.PureScript.Names (Ident(..), ModuleName, runModuleName)
 import Language.PureScript.Options (CodegenTarget(..), Options(..))
 import Language.PureScript.Pretty.Common (SMap(..))
-
 import Paths_purescript qualified as Paths
 import SourceMap (generate)
 import SourceMap.Types (Mapping(..), Pos(..), SourceMapping(..))
@@ -69,8 +68,9 @@ import System.IO (stderr, IOMode (..))
 import Language.PureScript.AST.Declarations (ErrorMessageHint(..))
 import Control.Concurrent.Lifted (MVar, newMVar, putMVar, takeMVar)
 import GHC.IO.StdHandles (withFile)
-import Control.Concurrent.Async (async)
-import Control.Monad (void)
+import GHC.IO.Handle (hFlush)
+import Language.PureScript.Make.ExternsDiff (ExternsDiff)
+import Numeric (showFFloat)
 
 -- | Determines when to rebuild a module
 data RebuildPolicy
@@ -78,21 +78,33 @@ data RebuildPolicy
   = RebuildNever
   -- | Always rebuild this module
   | RebuildAlways
-  deriving (Show, Eq, Ord)
+  -- | Do not rebuild and use supplied externs diff.
+  | RebuildReady ExternsDiff
+  deriving (Show, Ord, Eq)
 
+-- | Specifies reason for module compilation while incremental build.
 data RebuildReason
+  -- | Compiled because of RebuildAlways policy
   = RebuildAlwaysPolicy
+  -- | Compiled because of no previously built result available
+  | NoCached
+  -- | Compiled because of no previously built result for one of dependencies is available.
+  | NoCachedDependency
+  -- | Compiled because the module has changed since its previous compilation.
   | CacheOutdated
+  -- | Compiled because has later dependency (that previously has been built after the module).
   | LaterDependency ModuleName
+  -- | Compiled because of (the first found) changed reference in a dependency.
   | UpstreamRef ED.DiffRef
   deriving (Show, Eq, Ord)
 
 -- | Progress messages from the make process
 data ProgressMessage
-  = CompilingModule ModuleName (Maybe (Int, Int)) (Maybe RebuildReason)
+  = CompilingModule ModuleName (Maybe (Int, Int)) RebuildReason
   -- ^ Compilation started for the specified module
   | SkippingModule ModuleName (Maybe (Int, Int))
   | ModuleCompiled ModuleName (Maybe (Int, Int)) NominalDiffTime (Maybe ED.ExternsDiff) MultipleErrors
+  | ModuleFailed ModuleName (Maybe (Int, Int)) MultipleErrors
   deriving (Show)
 
 renderProgressIndex :: Maybe (Int, Int) -> T.Text
@@ -102,39 +114,56 @@ renderProgressIndex = maybe "" $ \(start, end) ->
         preSpace = T.replicate (T.length end' - T.length start') " "
     in "[" <> preSpace <> start' <> " of " <> end' <> "] "
 
-renderProgressExtensiveMessage :: T.Text -> ProgressMessage -> T.Text
-renderProgressExtensiveMessage infx msg = case msg of
-  CompilingModule mn mi br  ->
+sSuffix :: Int -> T.Text
+sSuffix n = if n > 1 then "s" else ""
+
+renderProgressVerboseMessage :: T.Text -> ProgressMessage -> T.Text
+renderProgressVerboseMessage infx msg = case msg of
+  CompilingModule mn mi br ->
     T.concat
       [ renderProgressIndex mi
       , "Compiling "
       , infx
       , runModuleName mn
-      , maybe "" (flip (<>) ")". (<>) " (rebuild reason: " . T.pack . show)  br
+      , (flip (<>) ")" . (<>) " (rebuild reason: " . T.pack . show) br
       ]
   SkippingModule mn mi ->
     T.concat
-      [renderProgressIndex mi
+      [ renderProgressIndex mi
       , "Skipping "
       , infx
       , runModuleName mn
       ]
-  ModuleCompiled mn mi time extDiff warnings->
+  ModuleCompiled mn mi time extDiff warnings ->
     T.concat
-      [renderProgressIndex mi
+      [ renderProgressIndex mi
       , "Compiled "
       , infx
       , runModuleName mn
-      -- displayTimeSpec in Logging
-      , " in " <> (T.pack . show . (*) 1000 . realToFrac  . nominalDiffTimeToSeconds) time <> " ms"
+      , " in " <> (T.pack . toMs) time <> " ms"
       , if nonEmpty warnings
-          then " with " <> (T.pack . show  ) wLen
-          <> " warning" <> if wLen > 1 then "s" else ""
+          then
+            " with "
+              <> (T.pack . show) wLen
+              <> " warning"
+              <> sSuffix wLen
           else ""
-      , maybe "" (flip (<>) ")". (<>) " (changed refs: " . T.pack . show . ED.getRefs)  extDiff
+      , maybe "" (flip (<>) ")" . (<>) " (changed refs: " . T.pack . show . ED.edRefs) extDiff
       ]
-      where
-        wLen = length $ runMultipleErrors warnings
+    where
+      wLen = length $ runMultipleErrors warnings
+      toMs ndt = showFFloat (Just 3) (realToFrac ndt * 1000 :: Double) ""
+  ModuleFailed mn mi errors ->
+    T.concat
+      [ renderProgressIndex mi
+      , "Failed to compile "
+      , infx
+      , runModuleName mn
+      , " with " <> (T.pack . show) eLen <> " error" <> sSuffix eLen
+      ]
+    where
+      eLen = length $ runMultipleErrors errors
+
 -- | Render a progress message
 -- infix in used, i.g in docs generation.
 renderProgressMessage :: T.Text -> ProgressMessage -> Maybe T.Text
@@ -174,10 +203,10 @@ data MakeActions m = MakeActions
   , readExterns :: ModuleName -> m (FilePath, Maybe ExternsFile)
   -- ^ Read the externs file for a module as a string and also return the actual
   -- path for the file.
-  , readWarnings :: ModuleName -> FilePath -> m (FilePath, Maybe MultipleErrors)
+  , readWarnings :: (ModuleName, FilePath) -> m (FilePath, Maybe MultipleErrors)
   -- ^ Read the file with cached warnings for a module and also return the
-  -- actual path for the file. It also takes filePath to place it in source spans
-  -- to personalize warnings for particular file path.
+  -- actual path for the warnings file. It also requires module's filePath to place
+  -- it in source spans to personalize warnings.
   , codegen :: CF.Module CF.Ann -> Docs.Module -> ExternsFile -> MultipleErrors -> SupplyT m ()
   -- ^ Run the code generator for the module and write any required output files.
   , ffiCodegen :: CF.Module CF.Ann -> m ()
@@ -271,13 +300,15 @@ progressWithFile logFilePath cleanFile = do
       TIO.hPutStrLn handle (withLogTime curTime initMsg)
   pure (logToFile lock)
   where
-  logToFile lock pm = void $ liftIO $ async $ do
+  -- TODO: what is better to use sync output vs hFlush handle?
+  logToFile lock pm = void $ liftIO $ do
     takeMVar lock
     --msg <- getLogMessage pm
     curTime <- getCurrentTime
-    let msg = withLogTime curTime (renderProgressExtensiveMessage "" pm)
-    liftIO $ withFile logFilePath AppendMode $ \handle ->
+    let msg = withLogTime curTime (renderProgressVerboseMessage "" pm)
+    liftIO $ withFile logFilePath AppendMode $ \handle -> do
         TIO.hPutStrLn handle msg
+        hFlush handle
     putMVar lock ()
 
 -- | A set of make actions that read and write modules from the given directory.
@@ -379,8 +410,8 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     let path = outputDir </> T.unpack (runModuleName mn) </> externsFileName
     (path, ) <$> readExternsFile path
 
-  readWarnings :: ModuleName -> FilePath -> Make (FilePath, Maybe MultipleErrors)
-  readWarnings mn fp = do
+  readWarnings :: (ModuleName, FilePath) -> Make (FilePath, Maybe MultipleErrors)
+  readWarnings (mn, fp) = do
     let path = outputDir </> T.unpack (runModuleName mn) </> warningsFileName
     (path, ) . fmap (replaceSpanNameInErrors fp) <$> readWarningsFile path
 

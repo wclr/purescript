@@ -106,11 +106,21 @@ data CheckState = CheckState
   , checkConstructorImportsForCoercible :: S.Set (ModuleName, Qualified (ProperName 'ConstructorName))
   -- ^ Newtype constructors imports required to solve Coercible constraints.
   -- We have to keep track of them so that we don't emit unused import warnings.
+  , checkTypeInfo :: Maybe TypeInfo
   }
+
+type TypeInfoEntry = (SourceSpan,  Ident, SourceType)
+type TypeInfo = [TypeInfoEntry]
+
+insertTypeInfo :: MonadState CheckState m => TypeInfoEntry -> m ()
+insertTypeInfo entry = do
+  modify
+    $ \st -> st { checkTypeInfo = (:) entry <$> checkTypeInfo st  }
+
 
 -- | Create an empty @CheckState@
 emptyCheckState :: Environment -> CheckState
-emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty
+emptyCheckState env = CheckState env 0 0 0 Nothing [] emptySubstitution [] mempty Nothing
 
 -- | Unification variables
 type Unknown = Int

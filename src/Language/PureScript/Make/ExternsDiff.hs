@@ -1,10 +1,10 @@
 module Language.PureScript.Make.ExternsDiff
-  ( ExternsDiff
+  ( ExternsDiff(..)
   , RefStatus(..)
   , DiffRef(..)
   , Ref(..)
+  , isEmpty
   , emptyDiff
-  , getRefs
   , diffExterns
   , checkDiffs
   ) where
@@ -42,7 +42,8 @@ data Ref
     TypeInstanceRef P.Ident (ModuleName, P.ProperName 'P.ClassName) [P.ProperName 'P.TypeName]
   deriving (Eq, Ord, Show)
 
-data RefStatus = Removed | Updated
+-- In diff we track removed, changed) and added refs.
+data RefStatus = Added | Removed | Updated
   deriving (Eq, Ord, Show)
 
 type RefWithDeps = (Ref, S.Set (ModuleName, Ref))
@@ -52,11 +53,8 @@ type RefsWithStatus = M.Map Ref RefStatus
 type ModuleRefsMap = Map ModuleName (Set Ref)
 
 data ExternsDiff = ExternsDiff
-  {edModuleName :: ModuleName, edRefs :: Map Ref RefStatus}
+  { edModuleName :: ModuleName, edRefs :: Map Ref RefStatus }
   deriving (Eq, Ord, Show)
-
-getRefs :: ExternsDiff -> Map Ref RefStatus
-getRefs (ExternsDiff _ refs)=  refs
 
 -- | Empty diff means no effective difference between externs.
 emptyDiff :: P.ModuleName -> ExternsDiff
@@ -91,7 +89,7 @@ getChanged newExts oldExts depsDiffsMap =
   where
     modName = P.efModuleName newExts
 
-    getDecls = map stripDeclaration . P.efDeclarations
+    getDecls = map refineDeclaration . P.efDeclarations
     getTypeFixities = P.efTypeFixities
     getFixities = P.efFixities
 
@@ -141,16 +139,17 @@ getChanged newExts oldExts depsDiffsMap =
     -- Determine which declarations where directly changed or removed by
     -- combining Declarations, Fixities and Type Fixities - as they are
     -- separated in externs we handle them separately. We don't care about added things.
-    (_, removed, changed, unchangedRefs) =
+    (added, removed, changed, unchangedRefs) =
       fold
         [ declsSplit
         , splitRefs (getFixities newExts) (getFixities oldExts) (pure . externsFixityToRef fixityCtx)
         , splitRefs (getTypeFixities newExts) (getTypeFixities oldExts) (pure . externsTypeFixityToRef)
         ]
 
+    withStatus status refs =  map ((,status) . fst) refs
     changedRefs =
       M.fromList $
-        map ((,Removed) . fst) removed <> map ((,Updated) . fst) changed
+        withStatus Added added <> withStatus Removed removed <> withStatus Updated changed
 
 -- Gets set of type constructors from new externs that have changed.
 getCtorsSets :: P.ExternsFile -> P.ExternsFile -> Set Ref
@@ -204,8 +203,8 @@ getAffectedLocal modName diffsMap unchangedRefs =
           filter (any (flip elem (fst <$> affectedByChanged)) . snd) refsGraph
 
 -- Compares two externs file versions using list with diffs of dependencies.
-diffExterns :: P.ExternsFile -> P.ExternsFile -> [ExternsDiff] -> ExternsDiff
-diffExterns newExts oldExts depsDiffs =
+diffExterns :: [ExternsDiff] -> P.ExternsFile -> P.ExternsFile -> ExternsDiff
+diffExterns depsDiffs newExts oldExts  =
   ExternsDiff modName $
     affectedReExported <> changedRefs <> affectedLocalRefs
   where
@@ -241,7 +240,7 @@ data DiffRef
 checkDiffs :: P.Module -> [ExternsDiff] -> Maybe DiffRef
 checkDiffs (P.Module _ _ _ decls exports) diffs
   | all isEmpty diffs = Nothing
-  | otherwise = case makeSearches_ decls diffs of
+  | otherwise = case makeSearches decls diffs of
       Left r -> Just (ImportedRef r)
       Right searches
         | null searches -> Nothing
@@ -319,121 +318,12 @@ checkUsage searches decls = listToMaybe anyUsages
       P.OpBinder _ n -> checkValueOp n
       _ -> mempty
 
--- Goes though the module and try to find any usage of the refs.
--- Takes a set of refs to search in module's declarations, if found returns True.
-checkUsage_ :: Set (Maybe ModuleName, Ref) -> [P.Declaration] -> Bool
-checkUsage_ searches decls = foldMap findUsage decls /= mempty
-  where
-    findUsage decl =
-      let (extr, _, _, _, _) = P.everythingWithScope goDecl goExpr goBinder mempty mempty
-       in extr mempty decl
-
-    toSearched = (,) <$> P.getQual <*> P.disqualify
-
-    -- To check data constructors we remove an origin type from it.
-    emptyName = P.ProperName ""
-    stripCtorType (ConstructorRef _ n) = ConstructorRef emptyName n
-    stripCtorType x = x
-
-    searches' = S.map (map stripCtorType) searches
-    check = Any . flip S.member searches' . toSearched
-
-    checkType = check . map TypeRef
-    checkTypeOp = check . map TypeOpRef
-    checkValue = check . map ValueRef
-    checkValueOp = check . map ValueOpRef
-    checkCtor = check . map (ConstructorRef emptyName)
-    checkClass = check . map TypeClassRef
-
-    onTypes = P.everythingOnTypes (<>) $ \case
-      P.TypeConstructor _ n -> checkType n
-      P.TypeOp _ n -> checkTypeOp n
-      P.ConstrainedType _ c _ -> checkClass (P.constraintClass c)
-      _ -> mempty
-
-    foldCtor f (P.DataConstructorDeclaration _ _ vars) =
-      foldMap (f . snd) vars
-
-    constraintTypes =
-      foldMap (\c -> P.constraintArgs c <> P.constraintKindArgs c)
-
-    goDecl _ = \case
-      P.TypeDeclaration t -> onTypes (P.tydeclType t)
-      P.DataDeclaration _ _ _ _ ctors -> foldMap (foldCtor onTypes) ctors
-      P.TypeSynonymDeclaration _ _ _ t -> onTypes t
-      P.KindDeclaration _ _ _ t -> onTypes t
-      P.FixityDeclaration _ (Right (P.TypeFixity _ tn _)) ->
-        checkType tn
-      P.FixityDeclaration _ (Left (P.ValueFixity _ (P.Qualified by val) _)) ->
-        either (checkValue . P.Qualified by) (checkCtor . P.Qualified by) val
-      P.TypeClassDeclaration _ _ _ cs _ _ ->
-        foldMap onTypes (constraintTypes cs)
-      P.TypeInstanceDeclaration _ _ _ _ _ cs tc sts _ ->
-        foldMap onTypes (constraintTypes cs <> sts) <> checkClass tc
-      _ -> mempty
-
-    isLocal scope ident = P.LocalIdent ident `S.member` scope
-    goExpr scope expr = case expr of
-      P.Var _ n
-        | P.isUnqualified n && isLocal scope (P.disqualify n) -> mempty
-        | otherwise -> checkValue n
-      P.Constructor _ n -> checkCtor n
-      P.Op _ n -> checkValueOp n
-      P.TypedValue _ _ t -> onTypes t
-      _ -> mempty
-
-    goBinder _ binder = case binder of
-      P.ConstructorBinder _ n _ -> checkCtor n
-      P.OpBinder _ n -> checkValueOp n
-      _ -> mempty
 
 -- | Traverses imports and returns a set of refs to be searched though the
 -- module. Returns Left with the first removed ref found in imports (no need to search
 -- through the module - the module needs to be recompiled). If an empty set is
 -- returned then no changes apply to the module.
-makeSearches_ :: [P.Declaration] -> [ExternsDiff] -> Either (ModuleName, Ref) (Set (ModuleName, Maybe ModuleName, Ref))
-makeSearches_ decls depsDiffs =
-  foldM go mempty decls
-  where
-    diffsMap = M.fromList (map (liftM2 (,) edModuleName edRefs) depsDiffs)
-    searchRef = find . flip S.member
-    -- Add data constructors to refs if all are implicitly imported using (..).
-    getCtor n (ConstructorRef tn _) = tn == n
-    getCtor _ _ = False
-    getCtors n = M.keys . M.filterWithKey (const . getCtor n)
-    addCtors mn (P.TypeRef _ n Nothing) = maybe [] (getCtors n) (M.lookup mn diffsMap)
-    addCtors _ _ = []
-    getRefs = (toRefs <>) . addCtors
-
-    go s (P.ImportDeclaration _ mn dt qual)
-      -- We return Nothing if we encounter removed refs in imports.
-      | Just diffs <- M.lookup mn diffsMap
-      , removed <- M.keysSet $ M.filter isRefRemoved diffs =
-          fmap ((s <>) . S.map (mn, qual,) . M.keysSet) $ case dt of
-            P.Explicit dRefs
-              | Just ref <- searchRef removed refs -> Left (mn, ref)
-              | otherwise ->
-                  -- Search only refs encountered in the import.
-                  Right $ M.filterWithKey (const . flip elem refs) diffs
-              where
-                refs = foldMap (getRefs mn) dRefs
-            P.Hiding dRefs
-              | Just ref <- searchRef removed refs -> Left (mn, ref)
-              | otherwise ->
-                  -- Search only refs not encountered in the import.
-                  Right $ M.filterWithKey (const . not . flip elem refs) diffs
-              where
-                refs = foldMap (getRefs mn) dRefs
-            -- Search all changed refs.
-            P.Implicit -> Right diffs
-    go s _ = Right s
-
-
--- | Traverses imports and returns a set of refs to be searched though the
--- module. Returns Left with the first removed ref found in imports (no need to search
--- through the module - the module needs to be recompiled). If an empty set is
--- returned then no changes apply to the module.
-makeSearches :: [P.Declaration] -> [ExternsDiff] -> Either (ModuleName, Ref) (Set (Maybe ModuleName, Ref))
+makeSearches :: [P.Declaration] -> [ExternsDiff] -> Either (ModuleName, Ref) (Set (ModuleName, Maybe ModuleName, Ref))
 makeSearches decls depsDiffs =
   foldM go mempty decls
   where
@@ -451,7 +341,7 @@ makeSearches decls depsDiffs =
       -- We return Nothing if we encounter removed refs in imports.
       | Just diffs <- M.lookup mn diffsMap
       , removed <- M.keysSet $ M.filter isRefRemoved diffs =
-          fmap ((s <>) . S.map (qual,) . M.keysSet) $ case dt of
+          fmap ((s <>) . S.map (mn, qual,) . M.keysSet) $ case dt of
             P.Explicit dRefs
               | Just ref <- searchRef removed refs -> Left (mn, ref)
               | otherwise ->
@@ -558,7 +448,7 @@ externsDeclarationToRef moduleName = \case
           , -- Add the type as a dependency: if the type has changed (e.g. left side
             -- param is added) we should recompile the module which uses the
             -- constructor (even if there no the explicit type import).
-            -- Aso add the ad-hoc constructors set ref dependency: if a ctor
+            -- Also add the ad-hoc constructors set ref dependency: if a ctor
             -- added/removed it should affect all constructors in the type,
             -- because case statement's validity may be affected by newly added
             -- or removed constructors.
@@ -599,23 +489,62 @@ externsDeclarationToRef moduleName = \case
               <> foldMap typeDeps args
         )
 
--- | Removes excessive info from declarations before comparing.
---
--- TODO: params renaming will be needed to avoid recompilation because of params
--- name changes.
-stripDeclaration :: P.ExternsDeclaration -> P.ExternsDeclaration
-stripDeclaration = \case
-  P.EDType n t (P.DataType dt args _) ->
-    -- Remove the notion of data constructors, we only compare type's left side.
-    P.EDType n t (P.DataType dt args [])
-  --
-  P.EDInstance cn n fa ks ts cs ch chi ns ss ->
-    P.EDInstance cn n fa ks ts cs (map stripChain ch) chi ns ss
-  --
-  decl -> decl
+
+-- | Replace type arguments with ordered names, this allows to handle
+-- generated arg names (like t43) and user's rename of args.
+refineType :: P.Type P.SourceAnn -> P.Type P.SourceAnn
+refineType = fst . flip runState M.empty .
+  P.everywhereOnTypesM
+    (\case
+      P.ForAll ann vis var mbK ty sco -> getName var <&> \v -> P.ForAll ann vis v mbK ty sco
+      P.TypeVar ann var -> getName var <&> P.TypeVar ann
+      other -> pure other
+    )
   where
+  getName varName = do
+    m <- get
+    case M.lookup varName m of
+      Just rep ->
+        pure rep
+      Nothing -> do
+        let rep = "a" <> show (M.size m)
+        put (M.insert varName rep m)
+        pure rep
+
+-- | Removes excessive info from declarations and rename type arguments before
+-- comparing.
+refineDeclaration :: P.ExternsDeclaration -> P.ExternsDeclaration
+refineDeclaration = \case
+  P.EDType n t k ->
+    P.EDType n (refineType t) (refineTypeKind k)
+
+  P.EDTypeSynonym n args t ->
+    P.EDTypeSynonym n (refineArgs args) (refineType t)
+
+  P.EDDataConstructor n org tn t ident ->
+    P.EDDataConstructor n org tn (refineType t) ident
+
+  P.EDValue n t ->
+    P.EDValue n  (refineType t)
+
+  P.EDClass n args mem con dep emt ->
+    P.EDClass n (refineArgs args) (map (map refineType) mem) con dep emt
+
+  P.EDInstance cn n fa ks ts cs ch chi ns _ss ->
+    P.EDInstance cn n (map (map refineType) fa) (map refineType ks) (map refineType ts)
+      cs (map refineChain ch) chi ns emptySpan
+
+  where
+    emptySpan =  P.SourceSpan "" emptySP emptySP
     emptySP = P.SourcePos 0 0
-    stripChain (ChainId (n, _)) = ChainId (n, emptySP)
+    refineChain (ChainId (_, _)) = ChainId ("", emptySP)
+    refineArgs = map (map (map refineType))
+    refineTypeKind = \case
+      -- Remove the notion of data constructors, we only compare type's left side.
+      (P.DataType dt args _) -> (P.DataType dt (refineDataArgs args) [])
+      other -> other
+    refineDataArgs =
+      zipWith (\idx (_, t, role) -> ("a" <> show idx, refineType <$> t, role)) [(0 :: Int)..]
 
 isPrimModule :: ModuleName -> Bool
 isPrimModule = flip S.member (S.fromList primModules)
