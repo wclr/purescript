@@ -72,7 +72,6 @@ hash = ContentHash . Hash.hash
 type CacheDb = Map ModuleName CacheInfo
 
 data CacheDbVersioned = CacheDbVersioned { cdbVersion :: Text, cdbModules :: CacheDb }
-  --deriving stock (Show)
   deriving (Eq, Ord)
 
 instance Aeson.FromJSON CacheDbVersioned where
@@ -107,6 +106,19 @@ newtype CacheInfo = CacheInfo
   deriving stock (Show)
   deriving newtype (Eq, Ord, Semigroup, Monoid, Aeson.FromJSON, Aeson.ToJSON)
 
+-- Maps old paths to current by extension.
+-- "Old/Module.purs" => "New/Module.urs"
+mapFilePaths :: Map FilePath b -> Map FilePath a -> Map FilePath a
+mapFilePaths cur =
+  Map.mapKeys $
+    \fp -> if Map.member fp cur then fp else curFp fp
+  where
+    ext = FilePath.takeExtension
+    filterExt fp fp' = ext fp == ext fp'
+    curFp fp = case filter (filterExt fp) (Map.keys cur) of
+        (fp' : _) -> fp'
+        _ -> fp
+
 -- | Given a module name, and a map containing the associated input files
 -- together with current metadata i.e. timestamps and hashes, check whether the
 -- input files have changed, based on comparing with the database stored in the
@@ -135,7 +147,11 @@ checkChanged
   -> m (CacheInfo, Bool)
 checkChanged cacheDb mn basePath currentInfo = do
 
-  let dbInfo = unCacheInfo $ fromMaybe mempty (Map.lookup mn cacheDb)
+  -- Replace paths in cachedDb entry with paths from new info to handle module
+  -- file rename/move without recompilation.
+  let dbInfo = mapFilePaths currentInfo
+        $ unCacheInfo $ fromMaybe mempty (Map.lookup mn cacheDb)
+
   (newInfo, isUpToDate) <-
     fmap mconcat $
       for (Map.toList (align dbInfo currentInfo)) $ \(normaliseForCache basePath -> fp, aligned) -> do

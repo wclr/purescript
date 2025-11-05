@@ -14,8 +14,8 @@ module Language.PureScript.Make.Monad
   , readCborFileIO
   , readExternsFile
   , readWarningsFile
-  , hashFile
   , removeFileIfExists
+  , hashFile
   , writeTextFile
   , writeJSONFile
   , writeCborFile
@@ -28,7 +28,7 @@ import Prelude
 import Codec.Serialise (Serialise)
 import Codec.Serialise qualified as Serialise
 import Control.Exception (fromException, tryJust, Exception (displayException))
-import Control.Monad (join, guard)
+import Control.Monad (join, guard, void)
 import Control.Monad.Base (MonadBase(..))
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.IO.Class (MonadIO(..))
@@ -53,7 +53,6 @@ import System.Directory qualified as Directory
 import System.FilePath (takeDirectory)
 import System.IO.Error (tryIOError, isDoesNotExistError)
 import System.IO.UTF8 (readUTF8FileT)
-import Control.Monad (void)
 
 -- | A monad for running make actions
 newtype Make a = Make
@@ -111,10 +110,6 @@ readTextFile path =
   makeIO ("read file: " <> Text.pack path) $
     readUTF8FileT path
 
-removeFileIfExists :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m ()
-removeFileIfExists path =
-  makeIO ("remove file if eixsts: " <> Text.pack path) $ (void . catchDoesNotExist) $ removeFile path
-
 -- | Read a JSON file in the 'Make' monad, returning 'Nothing' if the file does
 -- not exist or could not be parsed. Errors are captured using the 'MonadError'
 -- instance.
@@ -156,6 +151,10 @@ readExternsFile path = do
 readWarningsFile :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m (Maybe MultipleErrors)
 readWarningsFile path = do
   readCborFile path
+
+removeFileIfExists :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m ()
+removeFileIfExists path =
+  makeIO ("remove file if eixsts: " <> Text.pack path) $ (void . catchDoesNotExist) $ removeFile path
 
 hashFile :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m ContentHash
 hashFile path = do
