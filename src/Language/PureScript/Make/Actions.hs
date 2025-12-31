@@ -96,19 +96,19 @@ data RebuildReason
 
 -- | Progress messages from the make process
 data ProgressMessage
-  = CompilingModule ModuleName (Maybe (Int, Int)) RebuildReason
+  = CompilingModule ModuleName (Int, Int) RebuildReason
   -- ^ Compilation started for the specified module
-  | SkippingModule ModuleName (Maybe (Int, Int))
-  | ModuleCompiled ModuleName (Maybe (Int, Int)) NominalDiffTime (Maybe ED.ExternsDiff) MultipleErrors
-  | ModuleFailed ModuleName (Maybe (Int, Int)) MultipleErrors
+  | SkippingModule ModuleName (Int, Int)
+  | ModuleCompiled ModuleName (Int, Int) NominalDiffTime (Maybe ED.ExternsDiff) MultipleErrors
+  | ModuleFailed ModuleName (Int, Int) MultipleErrors
   deriving (Show)
 
-renderProgressIndex :: Maybe (Int, Int) -> T.Text
-renderProgressIndex = maybe "" $ \(start, end) ->
-    let start' = T.pack (show start)
-        end' = T.pack (show end)
-        preSpace = T.replicate (T.length end' - T.length start') " "
-    in "[" <> preSpace <> start' <> " of " <> end' <> "] "
+renderProgressIndex :: (Int, Int) -> T.Text
+renderProgressIndex (start, end) =
+  let start' = T.pack (show start)
+      end' = T.pack (show end)
+      preSpace = T.replicate (T.length end' - T.length start') " "
+  in "[" <> preSpace <> start' <> " of " <> end' <> "] "
 
 sSuffix :: Int -> T.Text
 sSuffix n = if n > 1 then "s" else ""
