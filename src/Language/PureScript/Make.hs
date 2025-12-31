@@ -303,25 +303,13 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
 
   buildModule :: QSem -> BuildPlan -> ModuleName -> Int -> FilePath -> [CST.ParserWarning] -> Either (NEL.NonEmpty CST.ParserError) Module -> [ModuleName] -> (ModuleName -> Bool) -> m ()
   buildModule lock buildPlan moduleName cnt fp pwarnings mres deps isDirect = do
-    -- Module's order index to display in progress. Use MVar to store its value
-    -- to make it available for the ModuleFailed message if the compilation
-    -- started and the index have been assigned.
-    mIdx <- C.newEmptyMVar
-    let getIdx = Just . (,cnt) <$> do
-          C.tryReadMVar mIdx >>= \case
-            Nothing -> do
-              idx <- C.takeMVar (bpIndex buildPlan)
-              C.putMVar (bpIndex buildPlan) (idx + 1)
-              C.putMVar mIdx idx
-              pure idx
-            Just idx -> pure idx
+    let
+      getModuleIndex = C.modifyMVar (bpIndex buildPlan) $ \idx -> pure (idx + 1, (idx, cnt))
+      catchFailure moduleIndex = flip catchError $ \errs -> do
+        progress $ ModuleFailed moduleName moduleIndex errs
+        pure $ BuildJobFailed errs
 
-    let onFailure errs = do
-          moduleIndex <- getIdx
-          progress $ ModuleFailed moduleName moduleIndex errs
-          pure $ BuildJobFailed errs
-
-    result <- flip catchError onFailure $ do
+    result <- do
       m <- CST.unwrapParserError fp mres
       -- We need to wait for dependencies to be built, before checking if the
       -- current module should be rebuilt, so the first thing to do is to wait
@@ -348,17 +336,17 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
           -- If any of deps returns Nothing for diff, means it had no previous result.
           -- Also only diffs of direct deps are needed.
           let depsDiffs = filter (isDirect . ED.edModuleName) <$> sequenceA mbDiffs
+          moduleIndex <- getModuleIndex
 
-          (br, warnings, exts, diff) <- do
+          catchFailure moduleIndex $ do
             -- Get the reason for building or skipping the compilation.
             case BuildPlan.getBuildReason buildPlan m depsDiffs of
               -- No rebuild reason skipping the module.
               Left (exts, warnings) -> do
                 _ <- updateOutputTimestamp moduleName Nothing
-                moduleIndex <- getIdx
                 progress $ SkippingModule moduleName moduleIndex
                 -- Prebuilt result warnings already contain parser warnings.
-                pure (Nothing, warnings, exts, Just (ED.emptyDiff moduleName))
+                pure $ BuildJobSucceeded Nothing warnings exts (Just (ED.emptyDiff moduleName))
 
               Right   br -> do
                 start <- liftBase getCurrentTime
@@ -375,7 +363,6 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                 -- Bracket all of the per-module work behind the semaphore, including
                 -- forcing the result. This is done to limit concurrency and keep
                 -- memory usage down; see comments above.
-                moduleIndex <- getIdx
                 (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
                   -- Eventlog markers for profiling; see debug/eventlog.js
                   liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
@@ -398,9 +385,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                 progress $ ModuleCompiled moduleName moduleIndex timeDiff diff warnings
 
                 -- Do not put warnings in job result because they are already told.
-                pure (Just br, mempty, exts, diff)
-
-          pure $ BuildJobSucceeded br warnings exts diff
+                pure $ BuildJobSucceeded (Just br) mempty exts diff
 
     BuildPlan.markComplete buildPlan moduleName result
 
