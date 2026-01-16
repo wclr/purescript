@@ -1,3 +1,29 @@
+-- |
+-- To avoid recompiling all downstream modules, we check what changes in
+-- upstream modules are externally visible by diffing externs, and then
+-- checking how that would affect each downstream module. The algorithm
+-- operates on the references (@Ref@) that modules import and export: values,
+-- types, operators, typeclasses, instances, and so on.
+--
+-- In more detail, we start with the old extern file from disk and the new
+-- externs just produced by compiling that module. (Externs are the only
+-- interaction between modules, so this is complete.) Then @diffExterns@
+-- assembles a diff of the externs for that module, with the help of
+-- @getChanged@. Between them they look not only at changed refs, but also
+-- how refs depend on each other (e.g. one ref showing up in the type of
+-- another) as well as re-exports. This is cached for each rebuilt module.
+--
+-- Removed and updated refs are the most important for downstream diffs.
+-- Added refs only matter for typeclassses (and shadowing?).
+--
+-- Determining whether to rebuild a (downstream) module then uses the diffs
+-- of the modules it imports, in several steps. First, @makeSearches@ looks at
+-- the refs that the module imports, and if any were removed, then it knows
+-- the module needs to be rebuilt. Otherwise it produces a set of updated refs.
+-- Then @checkUsage@ searches in the source of the module, through every type,
+-- expression, and binder, to find any mention of those refs, which would
+-- then require a rebuild of that module. (Changes in unused imports are
+-- ignored.)
 module Language.PureScript.Make.ExternsDiff
   ( ExternsDiff(..)
   , RefStatus(..)
