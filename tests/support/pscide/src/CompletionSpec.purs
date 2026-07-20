@@ -8,11 +8,16 @@ exampleFunction _ = 1
 
 exampleInferredString = ""
 
-infixl 5 exampleFunction as \°/ 
+infixl 5 exampleFunction as \°/
 
 data ExampleTypeConstructor a b = ExampleTypeConstructor a b
 
-infixl 5 type ExampleTypeConstructor as \°/ 
+infixl 5 type ExampleTypeConstructor as \°/
 
 class ExampleClass where
   exampleMember :: Int
+
+type Rec = { prop :: String, prop2 :: Int }
+
+fn :: Rec -> String
+fn = _.prop

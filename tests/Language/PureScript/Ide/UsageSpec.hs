@@ -14,6 +14,7 @@ import Test.Hspec (Expectation, Spec, beforeAll, describe, fit, it, shouldBe)
 import System.FilePath ((</>), makeRelative)
 import System.IO.UTF8 (readUTF8FileT)
 import Debug.Trace (trace)
+import GHC.Exts (sortWith)
 
 load :: [P.ModuleName] -> Command
 load = LoadSync
@@ -21,8 +22,16 @@ load = LoadSync
 usage :: P.ModuleName -> Text -> IdeNamespace -> Command
 usage = FindUsages
 
+sortSS :: [P.SourceSpan] -> [P.SourceSpan]
+sortSS =
+  sortWith P.spanStart
+
+sortBySpans :: [(FilePath,Span)] -> [(FilePath,Span)]
+sortBySpans =
+  sortWith (fst . snd)
+
 -- | Compares if usages with expected result
-shouldBeUsages :: [P.SourceSpan] -> [(FilePath, TextSpan)] -> Expectation
+shouldBeUsages :: [P.SourceSpan] -> [(FilePath, Span)] -> Expectation
 shouldBeUsages usages expected  =
   let
     normPath = map (\c -> if c == '\\' then '/' else c)
@@ -34,7 +43,7 @@ shouldBeUsages usages expected  =
   in
     do
       projectDir <- Test.getProjectDirectory
-      toExpected projectDir <$> usages `shouldBe` expected
+      toExpected projectDir <$> sortSS usages `shouldBe` ( map renderSpan <$> sortBySpans expected)
 
 -- | Loads passed modules and gets usages
 getUsages :: [P.ModuleName] -> (P.ModuleName, Text, IdeNamespace) -> IO [P.SourceSpan]
@@ -46,11 +55,11 @@ getUsages modules (module', ident, ns) = do
     pure usages
 
 -- | Helper to make test assertion. Maybe need to remove this.
-checkUsages ::
-  [P.ModuleName] -> (P.ModuleName, Text, IdeNamespace) -> [(FilePath, TextSpan)] -> Expectation
-checkUsages modules ident expected = do
-  usages <- getUsages modules ident
-  usages `shouldBeUsages` expected
+-- checkUsages ::
+--   [P.ModuleName] -> (P.ModuleName, Text, IdeNamespace) -> [(FilePath, TextSpan)] -> Expectation
+-- checkUsages modules ident expected = do
+--   usages <- getUsages modules ident
+--   usages `shouldBeUsages` expected
 
 -- | Finds
 findTextSpan :: Text -> (Text, Text) -> Maybe Span
@@ -112,7 +121,7 @@ renderSpan ((sl, sc), (el, ec)) =
 -- This helps to avoid manual setting/adjusting of expected span values, which
 -- is needed in case of structural changes in tested sources.
 makeSpanFinder ::
-  [P.ModuleName] -> IO (P.ModuleName -> SearchPattern -> (FilePath, TextSpan))
+  [P.ModuleName] -> IO (P.ModuleName -> SearchPattern -> (FilePath, Span))
 makeSpanFinder modules = do
   projectDir <- Test.getProjectDirectory
   mods <- mapM (loadText projectDir) modules
@@ -120,7 +129,7 @@ makeSpanFinder modules = do
  where
   ret mods m patterns =
     ( moduleNameRelPath m
-    , renderSpan $
+    ,
         fromMaybe (throw $ SpanFindException errMsg) $
           getSpan $
             fromMaybe (throw $ SpanFindException notLoadedMsg) mbMod
@@ -191,8 +200,6 @@ spec = beforeAll (makeSpanFinder allModules) $
         -- for infix case it finds the whole line
         , span mDefinition $ s ("infixl 2 type Usage as $%", "infixl 2 type Usage as $%")
         , span mDefinition $ s ("use :: Usage", "Usage")
-        --, span mFindUsage $ s ("import FindUsage.Definition", "Usage(Used)")
-        --, span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
         ]
 
     test it "foreign data type"
@@ -223,7 +230,6 @@ spec = beforeAll (makeSpanFinder allModules) $
         -- span mFindUsage $ s ("import FindUsage.Definition (Usage", "Usage(..)")
         ]
 
-
     test it "value operator for constructor"
         [mFindUsage, mDefinition, mReexport]
         (mDefinition, "$%", IdeNSValue)
@@ -248,10 +254,16 @@ spec = beforeAll (makeSpanFinder allModules) $
 
     it "finds a usage of newtype constructor" $ \span -> do
       usages <- getUsages
-        [mFindUsage, mDefinition]
+        [ mFindUsage
+        , mDefinition
+        ]
         (mFindUsage, "Find", IdeNSValue)
       usages `shouldBeUsages`
-        [span mFindUsage $ s ("use = Find", "Find")]
+        [ span mFindUsage $ s ("use = Find", "Find")
+        -- In binders.
+        , span mFindUsage $ s ("let (Find x)", "Find x")
+        , span mFindUsage $ s ("Find y =", "Find y")
+        ]
 
     it "finds a usage of newtype type" $ \span -> do
       usages <- getUsages
@@ -261,7 +273,7 @@ spec = beforeAll (makeSpanFinder allModules) $
         [span mFindUsage $ s ("instance UsageTC Find", "Find")]
 
     test it "type class in instance"
-      [mFindUsage, mDefinition]
+      [ mFindUsage, mDefinition ]
       (mDefinition, "UsageTC", IdeNSType)
       $ \span ->
         -- For type class in an instance it finds span of type class with params.

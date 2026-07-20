@@ -31,3 +31,10 @@ newtype Find = Find Usage
 
 instance UsageTC Find where
   use = Find
+
+--inLetBinding :: Find -> Usage
+inBinders find =
+  let (Find x) = find
+  in x
+  where
+  Find y = find
