@@ -22,6 +22,7 @@ output
 tests/purs/docs/docs/
 core-tests/full-core-docs.md
 tests/support/package-lock.json
+_src 
 .psc-ide-port
 .psc-package/
 tags
