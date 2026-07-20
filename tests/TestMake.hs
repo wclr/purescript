@@ -43,12 +43,39 @@ spec = do
         T.unlines
           [ "module Module where"
           , "foo = 0"
-          , "bar :: Int -> String"
-          , "bar xxx = yyy"
-          , "  where yyy = \"xxx_string\""
+          , "newtype Some = Some Int"
+          , "bar :: Some -> Boolean -> String"
+          , "bar arg1 agr2 = yyy"
+          , "  where"
+          , "  yyy = \"xxx_string\""
+          , "  zzz _ = yyy"
           ]
       compile [mPath] `shouldReturn` moduleNames ["Module"]
       compile [mPath] `shouldReturn` moduleNames []
+
+    it "rebuilds modules with errors each time" $ do
+      writeModule "A" "module A where foo = 1"
+      ((Right exts1, _), c1) <- compileAll
+
+      c1 `shouldBe` moduleNames ["A"]
+      length exts1 `shouldBe` 1
+
+      writeModule "A" "module A where foo = (2 :: String)"
+
+      compileAll >>= expectCompiledWithFailure  ["A"]
+      compileAll >>= expectCompiledWithFailure  ["A"]
+
+    xit "replaces file paths downstream" $ do
+      let content = "module Module where\ntype Foo = Int\n"
+      let downstream = "module Downstream where\nimport Module (Foo)\nbar :: Foo\nbar = 0\n"
+
+      writeModule "Module1" content
+      writeModule "Downstream" downstream
+      compileAll >>= expectCompiled ["Module", "Downstream"]
+      deleteModule "Module1"
+
+      writeModule "Module2" content
+      compileAll >>= completelyRenamed ["Module1"] []
 
     -- RESULTING EXTERNS
 
@@ -1415,6 +1442,17 @@ spec = do
     expectCompiledWithFailure mns r = do
       compiled <- assertFailure r
       compiled `shouldBe` moduleNames mns
+
+    completelyRenamed oldNames mns r = do
+      compiled <- assertSuccess r
+      compiled `shouldBe` moduleNames mns
+      case r of
+        ((Left _, _), _) -> fail "already caught"
+        ((Right allExterns, _), _) -> do
+          -- Print the externs to text
+          let externsContents = T.pack $ show allExterns
+          -- And verify that none of the old names still show up
+          filter (`T.isInfixOf` externsContents) oldNames `shouldBe` []
 
     getCompiledExterns mn r =
       case res of

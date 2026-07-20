@@ -2,12 +2,14 @@
 module Language.PureScript.ModuleDependencies
   ( DependencyDepth(..)
   , sortModules
+  , sortModules'
   , ModuleGraph
+  , ModuleGraph'
   , ModuleSignature(..)
   , moduleSignature
   ) where
 
-import Protolude hiding (head, trace)
+import Protolude hiding (head)
 
 import Data.Array ((!))
 import Data.Graph (SCC(..), graphFromEdges, reachable, stronglyConnComp)
@@ -19,7 +21,6 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), addHint, errorMessage', errorMessage'', parU)
 import Language.PureScript.Names (ModuleName)
 import Language.PureScript.AST.Declarations (DeclarationRef(..))
-import Debug.Trace (trace)
 
 -- | A list of modules with their transitive dependencies
 type ModuleGraph = [(ModuleName, [ModuleName])]
@@ -32,7 +33,9 @@ data ModuleSignature = ModuleSignature
   , sigReExports :: S.Set ModuleName
   }
 
-data DependencyDepth = Direct | ReExports | Transitive
+data DependencyDepth = Direct | Transitive
+  deriving (Eq, Ord, Show)
+--data DependencyDepth = Direct | ReExports | Transitive
 
 -- | Sort a collection of modules based on module dependencies.
 --
@@ -44,7 +47,20 @@ sortModules
   -> (a -> ModuleSignature)
   -> [a]
   -> m ([a], ModuleGraph)
-sortModules dependencyDepth toSig ms = do
+sortModules dependencyDepth toSig ms =
+  map (map (map (map snd))) <$> sortModules' dependencyDepth toSig ms
+
+
+type ModuleGraph' = [(ModuleName, [(DependencyDepth, ModuleName)])]
+
+sortModules'
+  :: forall m a
+   . MonadError MultipleErrors m
+  => DependencyDepth
+  -> (a -> ModuleSignature)
+  -> [a]
+  -> m ([a], ModuleGraph')
+sortModules' dependencyDepth toSig ms = do
     let
       ms' = (\m -> (m, toSig m)) <$> ms
       mns = S.fromList $ map (sigModuleName . snd) ms'
@@ -53,11 +69,13 @@ sortModules dependencyDepth toSig ms = do
     let (graph, fromVertex, toVertex) = graphFromEdges verts
         moduleGraph = do (_, mn, _) <- verts
                          let v       = fromMaybe (internalError "sortModules: vertex not found") (toVertex mn)
-                             deps    = case dependencyDepth of
-                                         Direct -> graph ! v
-                                         Transitive -> reachable graph v
-                             toKey i = case fromVertex i of (_, key, _) -> key
-                         return (mn, filter (/= mn) (map toKey deps))
+                             vxDepth vx = (if vx `elem` (graph ! v) then Direct else Transitive, vx)
+                             deps    =  case dependencyDepth of
+                                         Direct -> (Direct,) <$> graph ! v
+                                         Transitive -> vxDepth <$> reachable graph v
+                             toKey (depth, i) = case fromVertex i of (_, key, _) -> (depth, key)
+                         return (mn, filter ((/= mn) . snd) (map toKey deps))
+                         --return (mn, [(Direct, mn)])
     return (fst <$> ms'', moduleGraph)
   where
     toGraphNode :: S.Set ModuleName -> (a, ModuleSignature) -> m ((a, ModuleSignature), ModuleName, [ModuleName])
@@ -69,49 +87,6 @@ sortModules dependencyDepth toSig ms = do
             . errorMessage' pos
             $ ModuleNotFound dep
       pure (m, mn, map fst deps)
-
-
-sortModules_ ::
-  forall m a.
-  MonadError MultipleErrors m =>
-  DependencyDepth ->
-  (a -> ModuleSignature) ->
-  [a] ->
-  m ([a], ModuleGraph)
-sortModules_ depth toSig ms = do
-  let
-    ms' = (\m -> (m, toSig m)) <$> ms
-    mns = S.fromList $ map (sigModuleName . snd) ms'
-  -- this is crap
-  verts <- parU ms' (toGraphNode True mns)
-  verts' <- parU ms' (toGraphNode False mns)
-  ms'' <- parU (stronglyConnComp verts') toModule
-  let (graph, fromVertex, toVertex) = graphFromEdges verts
-      moduleGraph = do
-        ((_, ModuleSignature _ _ directs _), mn, _) <- verts
-        let v = fromMaybe (internalError "sortModules: vertex not found") . toVertex
-            deps = case depth of
-              Direct -> graph ! v mn
-              Transitive -> reachable graph (v mn)
-              ReExports -> S.toList $ foldMap (S.fromList . reachable graph . v)
-                (filter (flip notElem C.primModules) (fst <$> directs))
-            toKey i = case fromVertex i of (_, key, _) -> key
-        return (mn, filter (/= mn) (map toKey deps))
-  return (fst <$> ms'', moduleGraph)
-  where
-    toGraphNode :: Bool -> S.Set ModuleName -> (a, ModuleSignature) -> m ((a, ModuleSignature), ModuleName, [ModuleName])
-    toGraphNode useCutOff mns m@(_, ModuleSignature _ mn deps reexports) = do
-      void . parU deps $ \(dep, pos) ->
-        when (dep `notElem` C.primModules && S.notMember dep mns)
-          . throwError
-          . addHint (ErrorInModule mn)
-          . errorMessage' pos
-          $ ModuleNotFound dep
-      let cutoff = case depth of
-            ReExports | useCutOff-> filter (flip S.member reexports)
-            _ -> identity
-      pure (m, mn, cutoff $ map fst deps)
-
 
 -- | Calculate a list of used modules based on explicit imports and qualified names.
 usedModules :: Declaration -> Maybe (ModuleName, SourceSpan)
@@ -138,7 +113,7 @@ moduleSignature m@(Module ss _ mn ds _) =
 
 moduleReExports :: Module -> S.Set ModuleName
 moduleReExports (Module _ _ _ ds (Just refs)) =
-  foldl (flip go) S.empty (trace "moduleReExports" refs)
+  foldl (flip go) S.empty refs
   where
     refAs (ImportDeclaration _ mn _ Nothing) = Just (mn, mn)
     refAs (ImportDeclaration _ mn _ (Just as)) = Just (as, mn)

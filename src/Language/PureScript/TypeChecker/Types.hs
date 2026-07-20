@@ -593,7 +593,7 @@ inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded (Typed
     if checkType
       then withScopedTypeVars moduleName args (bindNames dict (check val ty'))
       else return (TypedValue' checkType val elabTy)
-  insertTypeInfo (ss, ident, ty'')
+  --insertTypeInfo (ss, ident, ty'')
   bindNames (M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (ty'', nameKind, Defined))
     $ inferLetBinding (seen ++ [ValueDecl sa ident nameKind [] [MkUnguarded (TypedValue checkType val' ty'')]]) rest ret j
 
@@ -603,7 +603,7 @@ inferLetBinding seen (ValueDecl sa@(ss, _) ident nameKind [] [MkUnguarded val] :
     let dict = M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (valTy, nameKind, Undefined)
     bindNames dict $ infer val
   warnAndRethrowWithPositionTC ss $ unifyTypes valTy valTy'
-  insertTypeInfo (ss, ident, valTy')
+  --insertTypeInfo (ss, ident, valTy')
   bindNames (M.singleton (Qualified (BySourcePos $ spanStart ss) ident) (valTy', nameKind, Defined))
     $ inferLetBinding (seen ++ [ValueDecl sa ident nameKind [] [MkUnguarded val']]) rest ret j
 
@@ -852,7 +852,7 @@ check' (DeferredDictionary className tys) ty = do
              ty
 check' (TypedValue checkType val ty1) ty2 = do
   moduleName <- unsafeCheckCurrentModule
-  ((args, elabTy1), kind1) <- kindOfWithScopedVars ty1
+  ((args, elabTy1), kind1) <- trace "check'" kindOfWithScopedVars ty1
   (elabTy2, kind2) <- kindOf ty2
   unifyKinds' kind1 kind2
   checkTypeKind ty1 kind1
