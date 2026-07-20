@@ -15,4 +15,4 @@ spec =
       deleteOutputFolder
       s <- compileTestProject
       unless s (fail "Failed to compile .purs sources")
-
+      --pure ()

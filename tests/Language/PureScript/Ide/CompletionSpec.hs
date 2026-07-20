@@ -1,6 +1,6 @@
 module Language.PureScript.Ide.CompletionSpec where
 
-import Protolude
+import Protolude hiding (trace)
 
 import Language.PureScript qualified as P
 import Language.PureScript.Ide.Test as Test
@@ -8,7 +8,8 @@ import Language.PureScript.Ide.Command as Command
 import Language.PureScript.Ide.Completion (CompletionOptions(..), applyCompletionOptions, defaultCompletionOptions)
 import Language.PureScript.Ide.Filter.Declaration qualified as DeclarationType
 import Language.PureScript.Ide.Types (Completion(..), IdeDeclarationAnn, Match(..), Success(..))
-import Test.Hspec (Spec, describe, it, shouldBe, shouldMatchList, shouldSatisfy)
+import Test.Hspec (Spec, describe, it, shouldBe, shouldMatchList, shouldSatisfy, fit)
+import Debug.Trace (trace)
 
 reexportMatches :: [Match IdeDeclarationAnn]
 reexportMatches =
@@ -41,12 +42,15 @@ spec = describe "Applying completion options" $ do
     applyCompletionOptions (defaultCompletionOptions { coGroupReexports = True })
       reexportMatches `shouldBe` [(Match (mn "A", ideKind "Kind"), [mn "A", mn "B"])]
 
+  -- DOCS
+
   it "gets simple docs on definition itself" $ do
     ([_, Right (CompletionResult [ result ])], _) <- Test.inProject $
       Test.runIde [ load ["CompletionSpecDocs"]
                   , typ "something"
                   ]
-    result `shouldSatisfy` \res -> complDocumentation res == Just "Doc x\n"
+    print (show result :: Text)
+    checkDocs result "Doc x\n"
 
   it "gets multiline docs" $ do
     ([_, Right (CompletionResult [ result ])], _) <- Test.inProject $
@@ -83,6 +87,8 @@ spec = describe "Applying completion options" $ do
                   ]
     result `shouldSatisfy` \res -> complDocumentation res == Just "doc for member\n"
 
+  -- DECLARATION TYPE
+
   it "includes declarationType in completions for values" $ do
     ([_, Right (CompletionResult [ result ])], _) <- Test.inProject $
       Test.runIde [ load ["CompletionSpec"]
@@ -97,6 +103,7 @@ spec = describe "Applying completion options" $ do
                   , typ "exampleFunction"
                   ]
     result `shouldSatisfy` \res ->
+      --(trace $ show res)
       complDeclarationType res == Just DeclarationType.Value
 
   it "includes declarationType in completions for inferred values" $ do
@@ -145,3 +152,5 @@ spec = describe "Applying completion options" $ do
                   ]
     result `shouldSatisfy` \res ->
       complDeclarationType res == Just DeclarationType.Value
+  where
+  checkDocs result text = result `shouldSatisfy` (==) (Just text) . complDocumentation

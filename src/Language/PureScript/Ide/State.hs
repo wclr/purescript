@@ -16,7 +16,7 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Language.PureScript.Ide.State
-  ( getLoadedModulenames
+  ( getLoadedModuleNames
   , getExternFiles
   , getIdeState
   , getFileState
@@ -24,14 +24,29 @@ module Language.PureScript.Ide.State
   , cacheRebuild
   , cachedRebuild
   , insertExterns
+  , insertExterns'
+  , updateExternsTimestamp
+  --, setWarnings
+  , insertWarnings
+  , insertWarnings'
   , insertModule
-  , insertExternsSTM
+  , insertModules
+  , cleanUpModule
+  --, insertExternsSTM
+  , insertCacheDb
+  , getCacheDb
+  --, insertCacheDbRemoved
+  --, getCacheDbRemoved
+  , insertModuleUpdate
+  , cleanUpdates
+  , getUpdates
   , getAllModules
   , populateVolatileState
   , populateVolatileStateSync
   --, populateVolatileStateSTM
   , getOutputDirectory
   , updateCacheTimestamp
+  , readIdeConfiguration
   -- for tests
   , resolveOperatorsForModule
   , resolveInstances
@@ -45,9 +60,11 @@ import Control.Lens (Ixed(..), preview, view, (%~), (.~), (^.))
 import "monad-logger" Control.Monad.Logger (MonadLogger, logWarnN)
 import Data.IORef (readIORef, writeIORef)
 import Data.Map.Lazy qualified as Map
+import Data.Set qualified as Set
 import Data.Time.Clock (UTCTime)
 import Data.Zip (unzip)
 import Language.PureScript qualified as P
+import Language.PureScript.CoreFn qualified as CF
 import Language.PureScript.Docs.Convert.Single (convertComments)
 import Language.PureScript.Externs (ExternsDeclaration(..), ExternsFile(..))
 import Language.PureScript.Make.Actions (cacheDbFile)
@@ -57,6 +74,9 @@ import Language.PureScript.Ide.SourceFile (extractAstInformation)
 import Language.PureScript.Ide.Types
 import Language.PureScript.Ide.Util (discardAnn, opNameT, properNameT, runLogger)
 import System.Directory (getModificationTime)
+import Language.PureScript.Make.Cache (CacheDb)
+import Language.PureScript.Ide.Logging (logPerf, labelTimespec)
+import Language.PureScript.Environment (initEnvironment)
 
 -- | Resets all State inside psc-ide
 resetIdeState :: Ide m => m ()
@@ -66,7 +86,7 @@ resetIdeState = do
 
 getOutputDirectory :: Ide m => m FilePath
 getOutputDirectory = do
-  confOutputPath . ideConfiguration <$> ask
+  confOutputPath <$> readIdeConfiguration
 
 getCacheTimestamp :: Ide m => m (Maybe UTCTime)
 getCacheTimestamp = do
@@ -89,13 +109,33 @@ updateCacheTimestamp = do
       liftIO (writeIORef ts new)
       pure (Just (old, new))
 
+readIdeConfiguration :: Ide m => m IdeConfiguration
+readIdeConfiguration = do
+  ideConfiguration <$> ask
+  --confVar <- ideConfiguration <$> ask
+  --liftIO (readTVarIO confVar)
+
+
+-- updateConfig :: Ide m => (IdeConfiguration -> IdeConfiguration) -> m ()
+-- updateConfig modify = do
+--   old <- getCacheTimestamp
+--   new <- readCacheTimestamp
+--   x <- ideConfiguration <$> ask
+--   if old == new
+--     then pure Nothing
+--     else do
+--       ts <- ideCacheDbTimestamp <$> ask
+--       liftIO (writeIORef ts new)
+--       pure (Just (old, new))
+
+
 -- | Gets the loaded Modulenames
-getLoadedModulenames :: Ide m => m [P.ModuleName]
-getLoadedModulenames = Map.keys <$> getExternFiles
+getLoadedModuleNames :: Ide m => m [P.ModuleName]
+getLoadedModuleNames = Map.keys <$> getExternFiles
 
 -- | Gets all loaded ExternFiles
 getExternFiles :: Ide m => m (ModuleMap ExternsFile)
-getExternFiles = fsExterns <$> getFileState
+getExternFiles = map snd . fsExterns <$> getFileState
 
 -- | Insert a Module into Stage1 of the State
 insertModule :: Ide m => (FilePath, P.Module) -> m ()
@@ -103,15 +143,49 @@ insertModule module' = do
   stateVar <- ideStateVar <$> ask
   liftIO . atomically $ insertModuleSTM stateVar module'
 
+insertModules :: Ide m => [(FilePath, P.Module)] -> m ()
+insertModules ms = do
+  stateVar <- ideStateVar <$> ask
+  let modules = Map.fromList (map (\(fp, m) -> (P.getModuleName m, (m, fp))) ms)
+  liftIO . atomically $
+    modifyTVar stateVar $ \x -> x
+      { ideFileState = (ideFileState x)
+          { fsModules =
+              Map.union modules (fsModules (ideFileState x))
+          }
+      }
+
+-- Remove modules with the same path but different name.
+cleanUpModule :: Ide m => (FilePath, P.Module) -> m ()
+cleanUpModule (fp, m) = do
+  stateVar <- ideStateVar <$> ask
+
+  liftIO . atomically $
+    modifyTVar stateVar $ \x -> do
+      let
+        modules = fsModules (ideFileState x)
+        filtered = modules
+          & Map.filterWithKey (\mn' (_, fp') -> not (fp' == fp && P.getModuleName m /= mn'))
+        st = ideFileState x
+      x { ideFileState = st
+          { fsModules = filtered
+          , fsExterns = Map.intersection (fsExterns st) filtered
+          , fsWarnings = Map.intersection (fsWarnings st) filtered
+          , fsUpdates = Map.intersection (fsUpdates st) filtered
+          }
+      }
+
 -- | STM version of insertModule
 insertModuleSTM :: TVar IdeState -> (FilePath, P.Module) -> STM ()
-insertModuleSTM ref (fp, module') =
-  modifyTVar ref $ \x ->
-    x { ideFileState = (ideFileState x) {
-          fsModules = Map.insert
-            (P.getModuleName module')
-            (module', fp)
-            (fsModules (ideFileState x))}}
+insertModuleSTM ref (fp, m) =
+  modifyTVar ref $ \x -> x
+    { ideFileState = (ideFileState x)
+        { fsModules = fsModules (ideFileState x)
+            -- & Map.filter (\(_, fp') -> fp' /= fp)
+            & Map.insert (P.getModuleName m) (m, fp)
+
+        }
+    }
 
 getIdeState :: Ide m => m IdeState
 getIdeState = do
@@ -177,35 +251,134 @@ getAllModules mmoduleName = do
 -- | Adds an ExternsFile into psc-ide's FileState. This does not populate the
 -- VolatileState, which needs to be done after all the necessary Externs and
 -- SourceFiles have been loaded.
-insertExterns :: Ide m => ExternsFile -> m ()
+insertExterns :: Ide m => (UTCTime, ExternsFile) -> m ()
 insertExterns ef = do
   st <- ideStateVar <$> ask
   liftIO (atomically (insertExternsSTM st ef))
 
+
 -- | STM version of insertExterns
-insertExternsSTM :: TVar IdeState -> ExternsFile -> STM ()
+insertExternsSTM :: TVar IdeState -> (UTCTime, ExternsFile) -> STM ()
 insertExternsSTM ref ef =
   modifyTVar ref $ \x ->
     x { ideFileState = (ideFileState x) {
-          fsExterns = Map.insert (efModuleName ef) ef (fsExterns (ideFileState x))}}
+          fsExterns = Map.insert (efModuleName (snd ef)) ef (fsExterns (ideFileState x))}}
+
+-- setExterns :: Ide m => [ExternsFile] -> m ()
+-- setExterns exts = do
+--   ref <- ideStateVar <$> ask
+--   liftIO $ atomically $
+--     modifyTVar ref $ \x -> x
+--       { ideFileState = (ideFileState x) {
+--           fsExterns = Map.fromList $ ((, ) =<< efModuleName) <$> exts }
+--      }
+
+insertExterns' :: Ide m => [(UTCTime, ExternsFile)] -> m ()
+insertExterns' exts = do
+  ref <- ideStateVar <$> ask
+  liftIO $ atomically $
+    modifyTVar ref $ \x -> x
+      { ideFileState = (ideFileState x)
+          { fsExterns = Map.union
+              (Map.fromList $ ((, ) =<< efModuleName . snd) <$> exts)
+              (fsExterns (ideFileState x))
+          }
+      }
+
+updateExternsTimestamp :: Ide m => P.ModuleName -> UTCTime -> m ()
+updateExternsTimestamp mn ts = do
+  ref <- ideStateVar <$> ask
+  liftIO $ atomically $
+    modifyTVar ref $ \x -> x
+      { ideFileState = (ideFileState x)
+          { fsExterns =
+              Map.update (\(_, ext) -> pure (ts, ext)) mn (fsExterns (ideFileState x))
+          }
+      }
+
+insertWarnings' :: Ide m => [(P.ModuleName, P.MultipleErrors)] -> m ()
+insertWarnings' warns = do
+  ref <- ideStateVar <$> ask
+  liftIO $ atomically $
+    modifyTVar ref $ \x -> x
+      { ideFileState = (ideFileState x)
+          { fsWarnings = Map.union (Map.fromList warns) (fsWarnings (ideFileState x))
+          }
+      }
+
+insertWarnings :: Ide m => P.ModuleName -> P.MultipleErrors -> m ()
+insertWarnings mn warns = do
+  stVar <- ideStateVar <$> ask
+  liftIO . atomically .
+    modifyTVar stVar $ \st -> do
+      let warnings = Map.insert mn warns (fsWarnings (ideFileState st))
+      st {ideFileState = (ideFileState st) {fsWarnings = warnings}}
+
+
+
+insertCacheDb :: Ide m => CacheDb -> m ()
+insertCacheDb cacheDb = do
+  st <- ideStateVar <$> ask
+  liftIO . atomically .
+    modifyTVar st $ \x ->
+      x {ideFileState = (ideFileState x) {fsCacheDb = cacheDb}}
+
+getCacheDb :: Ide m => m CacheDb
+getCacheDb =
+  fsCacheDb <$> getFileState
+
+insertModuleUpdate :: (Ide m) => P.ModuleName -> Update -> m ()
+insertModuleUpdate mn up = do
+  st <- ideStateVar <$> ask
+  liftIO . atomically . modifyTVar st $ \x -> do
+    let fsSt = ideFileState x
+
+    ---let updates = Map.insert mn up (fsUpdates fsSt)
+    let updates =
+          fsUpdates fsSt & case up of
+            Left ts ->
+              -- If we insert (Left ts) update we should keep previous Right
+              -- content output update but use use updated timestamp.
+              flip Map.alter mn $ \case
+                Just (Right (_, ann, m, ext, wrn)) ->
+                  Just (Right (ts, ann, m, ext, wrn))
+                _ -> Just up
+            _ -> Map.insert mn up
+    x {ideFileState = fsSt {fsUpdates = updates}}
+
+cleanUpdates :: (Ide m) => m ()
+cleanUpdates = do
+  st <- ideStateVar <$> ask
+  liftIO . atomically . modifyTVar st $ \x -> do
+    x {ideFileState = (ideFileState x) {fsUpdates = Map.empty}}
+
+getUpdates :: Ide m => m (ModuleMap Update)
+getUpdates =
+  fsUpdates <$> getFileState
 
 -- | Sets rebuild cache to the given ExternsFile
+cacheRebuild' :: Ide m => (ExternsFile, P.Environment) -> m ()
+cacheRebuild' (ef, env) = do
+  st <- ideStateVar <$> ask
+  liftIO . atomically . modifyTVar st $ \x ->
+    x {ideVolatileState = (ideVolatileState x) {vsCachedRebuild = Just (efModuleName ef, (ef, env))}}
+
 cacheRebuild :: Ide m => ExternsFile -> m ()
 cacheRebuild ef = do
   st <- ideStateVar <$> ask
   liftIO . atomically . modifyTVar st $ \x ->
-    x { ideVolatileState = (ideVolatileState x) {
-          vsCachedRebuild = Just (efModuleName ef, ef)}}
+    x {ideVolatileState = (ideVolatileState x) {vsCachedRebuild = Just (efModuleName ef, (ef, initEnvironment))}}
+
 
 -- | Retrieves the rebuild cache
 cachedRebuild :: Ide m => m (Maybe (P.ModuleName, ExternsFile))
-cachedRebuild = vsCachedRebuild <$> getVolatileState
+cachedRebuild = fmap (fmap fst) . vsCachedRebuild <$> getVolatileState
 
 -- | Resolves reexports and populates VolatileState with data to be used in queries.
 populateVolatileStateSync :: (Ide m, MonadLogger m) => m ()
 populateVolatileStateSync = do
   st <- ideStateVar <$> ask
-  results <- liftIO (atomically (populateVolatileStateSTM st))
+  results <- logPerf (labelTimespec "populateVolatileStateSync") $  liftIO (atomically (populateVolatileStateSTM st))
   void $ Map.traverseWithKey
     (\mn -> logWarnN . prettyPrintReexportResult (const (P.runModuleName mn)))
     (Map.filter reexportHasFailures results)
@@ -213,7 +386,7 @@ populateVolatileStateSync = do
 populateVolatileState :: Ide m => m (Async ())
 populateVolatileState = do
   env <- ask
-  let ll = confLogLevel (ideConfiguration env)
+  ll <- confLogLevel <$> readIdeConfiguration
   -- populateVolatileState return Unit for now, so it's fine to discard this
   -- result. We might want to block on this in a benchmarking situation.
   liftIO (async (runLogger ll (runReaderT populateVolatileStateSync env)))
@@ -223,7 +396,8 @@ populateVolatileStateSTM
   :: TVar IdeState
   -> STM (ModuleMap (ReexportResult [IdeDeclarationAnn]))
 populateVolatileStateSTM ref = do
-  IdeFileState{fsExterns = externs, fsModules = modules} <- getFileStateSTM ref
+  IdeFileState{fsExterns = externs', fsModules = modules} <- getFileStateSTM ref
+  let externs = map snd externs'
   -- We're not using the cached rebuild for anything other than preserving it
   -- through the repopulation
   rebuildCache <- vsCachedRebuild <$> getVolatileStateSTM ref
@@ -237,7 +411,7 @@ populateVolatileStateSTM ref = do
         & resolveInstances externs
         & resolveOperators
         & resolveReexports reexportRefs
-  setVolatileStateSTM ref (IdeVolatileState (AstData asts) (map reResolved results) rebuildCache mempty mempty)
+  setVolatileStateSTM ref (IdeVolatileState (AstData asts) (map reResolved results) rebuildCache)
   pure results
 
 resolveLocations

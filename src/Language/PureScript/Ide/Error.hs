@@ -32,28 +32,38 @@ data IdeError
     | ModuleNotFound ModuleIdent
     | ModuleFileNotFound ModuleIdent
     | RebuildError [(FilePath, Text)] P.MultipleErrors
+    | Rebuild2Error [FilePath] (P.MultipleErrors, P.MultipleErrors)
+    -- ^ [Successfully compiled files] (warnings, errors)
     deriving (Show)
 
 instance ToJSON IdeError where
   toJSON (RebuildError files errs) = object
     [ "resultType" .= ("error" :: Text)
-    , "result" .= encodeRebuildErrors files errs
+    , "result" .= encodeRebuildErrors files P.Error errs
+    ]
+  toJSON (Rebuild2Error compiled (warns, errs)) = object
+    [ "resultType" .= ("error" :: Text)
+    , "result" .= Aeson.object
+          [ "warnings" .= encodeRebuildErrors [] P.Warning warns
+          , "errors" .= encodeRebuildErrors [] P.Error errs
+          , "compiled" .= compiled
+          ]
     ]
   toJSON err = object
     [ "resultType" .= ("error" :: Text)
     , "result" .= textError err
     ]
 
-encodeRebuildErrors :: [(FilePath, Text)] -> P.MultipleErrors -> Value
-encodeRebuildErrors files = toJSON . map encodeRebuildError . P.runMultipleErrors
+encodeRebuildErrors :: [(FilePath, Text)] -> P.Level -> P.MultipleErrors -> Value
+encodeRebuildErrors files lvl = toJSON . map encodeRebuildError . P.runMultipleErrors
   where
     encodeRebuildError err = case err of
       (P.ErrorMessage _
        ((P.HoleInferredType name _ _
          (Just P.TSAfter{tsAfterIdentifiers=idents, tsAfterRecordFields=fields})))) ->
-        insertTSCompletions name idents (fromMaybe [] fields) (toJSON (toJSONError False P.Error files err))
+        insertTSCompletions name idents (fromMaybe [] fields) (toJSON (toJSONError False lvl files err))
       _ ->
-        (toJSON . toJSONError False P.Error files) err
+        (toJSON . toJSONError False lvl files) err
 
     insertTSCompletions name idents fields (Aeson.Object value) =
       Aeson.Object
@@ -64,7 +74,7 @@ encodeRebuildErrors files = toJSON . map encodeRebuildError . P.runMultipleError
     insertTSCompletions _ _ _ v = v
 
     identCompletion (P.Qualified mn i, ty) =
-      Completion     
+      Completion
         { complModule = maybe "" P.runModuleName $ P.toMaybeModuleName mn
         , complIdentifier = i
         , complType = prettyPrintTypeSingleLine ty
@@ -75,7 +85,7 @@ encodeRebuildErrors files = toJSON . map encodeRebuildError . P.runMultipleError
         , complDeclarationType = Nothing
         }
     fieldCompletion (label, ty) =
-      Completion 
+      Completion
         { complModule = ""
         , complIdentifier = "_." <> P.prettyPrintLabel label
         , complType = prettyPrintTypeSingleLine ty
@@ -87,11 +97,12 @@ encodeRebuildErrors files = toJSON . map encodeRebuildError . P.runMultipleError
         }
 
 textError :: IdeError -> Text
-textError (GeneralError msg)          = msg
-textError (NotFound ident)            = "Symbol '" <> ident <> "' not found."
-textError (ModuleNotFound ident)      = "Module '" <> ident <> "' not found."
-textError (ModuleFileNotFound ident)  = "Extern file for module " <> ident <> " could not be found"
-textError (RebuildError _ err)        = show err
+textError (GeneralError msg) = msg
+textError (NotFound ident) = "Symbol '" <> ident <> "' not found."
+textError (ModuleNotFound ident) = "Module '" <> ident <> "' not found."
+textError (ModuleFileNotFound ident) = "Extern file for module " <> ident <> " could not be found"
+textError (RebuildError _ err) = show err
+textError (Rebuild2Error _ (wrn, err)) = show (wrn <> err)
 
 prettyPrintTypeSingleLine :: P.Type a -> Text
 prettyPrintTypeSingleLine = T.unwords . map T.strip . T.lines . T.pack . P.prettyPrintTypeWithUnicode maxBound

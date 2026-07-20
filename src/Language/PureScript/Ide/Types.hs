@@ -16,10 +16,12 @@ import Data.IORef (IORef)
 import Data.Time.Clock (UTCTime)
 import Data.Map.Lazy qualified as M
 import Language.PureScript qualified as P
+import Language.PureScript.CoreFn qualified as CF
+import Language.PureScript.Docs.Types qualified as Docs
 import Language.PureScript.Errors.JSON qualified as P
 import Language.PureScript.Ide.Filter.Declaration (DeclarationType(..))
 import Language.PureScript.Make.Cache (CacheDb)
-import Language.PureScript.CST qualified as CST
+import Control.Monad.Trans.Control (MonadBaseControl)
 
 type ModuleIdent = Text
 type ModuleMap a = Map P.ModuleName a
@@ -173,9 +175,10 @@ data IdeEnvironment =
   { ideStateVar :: TVar IdeState
   , ideConfiguration :: IdeConfiguration
   , ideCacheDbTimestamp :: IORef (Maybe UTCTime)
+  , ideLogHandle :: MVar Handle
   }
 
-type Ide m = (MonadIO m, MonadReader IdeEnvironment m)
+type Ide m = (MonadIO m, MonadBaseControl IO m, MonadReader IdeEnvironment m)
 
 data IdeState = IdeState
   { ideFileState :: IdeFileState
@@ -186,11 +189,12 @@ emptyIdeState :: IdeState
 emptyIdeState = IdeState emptyFileState emptyVolatileState
 
 emptyFileState :: IdeFileState
-emptyFileState = IdeFileState M.empty M.empty M.empty
+emptyFileState = IdeFileState M.empty M.empty M.empty M.empty M.empty
 
 emptyVolatileState :: IdeVolatileState
-emptyVolatileState = IdeVolatileState (AstData M.empty) M.empty Nothing M.empty M.empty
+emptyVolatileState = IdeVolatileState (AstData M.empty) M.empty Nothing
 
+type Update = Either UTCTime (UTCTime, CF.Module CF.Ann, Docs.Module, P.ExternsFile, P.MultipleErrors)
 
 -- | @IdeFileState@ holds data that corresponds 1-to-1 to an entity on the
 -- filesystem. Externs correspond to the ExternsFiles the compiler emits into
@@ -198,9 +202,11 @@ emptyVolatileState = IdeVolatileState (AstData M.empty) M.empty Nothing M.empty 
 -- that we can update single modules or ExternsFiles inside this state whenever
 -- the corresponding entity changes on the file system.
 data IdeFileState = IdeFileState
-  { fsExterns :: ModuleMap P.ExternsFile
+  { fsExterns :: ModuleMap (UTCTime, P.ExternsFile)
+  , fsWarnings :: ModuleMap P.MultipleErrors
   , fsModules :: ModuleMap (P.Module, FilePath)
   , fsCacheDb :: CacheDb
+  , fsUpdates :: ModuleMap Update
   } deriving (Show)
 
 -- | @IdeVolatileState@ is derived from the @IdeFileState@ and needs to be
@@ -213,9 +219,7 @@ data IdeFileState = IdeFileState
 data IdeVolatileState = IdeVolatileState
   { vsAstData :: AstData P.SourceSpan
   , vsDeclarations :: ModuleMap [IdeDeclarationAnn]
-  , vsCachedRebuild :: Maybe (P.ModuleName, P.ExternsFile)
-  , vsExterns :: ModuleMap P.ExternsFile -- added
-  , vsModules :: ModuleMap P.Module -- added
+  , vsCachedRebuild :: Maybe (P.ModuleName, (P.ExternsFile, P.Environment))
   } deriving (Show)
 
 newtype Match a = Match (P.ModuleName, a)
@@ -265,6 +269,7 @@ declarationType decl = case decl of
   IdeDeclValueOperator _ -> ValueOperator
   IdeDeclTypeOperator _ -> TypeOperator
   IdeDeclModule _ -> Module
+
 data Success =
   CompletionResult [Completion]
   | TextResult Text
@@ -273,6 +278,8 @@ data Success =
   | ImportList (P.ModuleName, [(P.ModuleName, P.ImportDeclarationType, Maybe P.ModuleName)])
   | ModuleList [ModuleIdent]
   | RebuildSuccess P.MultipleErrors
+  | Rebuild2Result [FilePath] (P.MultipleErrors, P.MultipleErrors)
+  -- ^ [Successfully compiled files] (warnings, errors)
   deriving (Show)
 
 encodeSuccess :: ToJSON a => a -> Aeson.Value
@@ -295,6 +302,12 @@ instance ToJSON Success where
         ]
     ModuleList modules -> encodeSuccess modules
     RebuildSuccess warnings -> encodeSuccess (P.toJSONErrors False P.Warning [] warnings)
+    Rebuild2Result compiled (warnings, errors) ->
+        encodeSuccess $ Aeson.object
+          [ "warnings" .= P.toJSONErrors False P.Warning [] warnings
+          , "errors" .= P.toJSONErrors False P.Error [] errors
+          , "compiled" .= compiled
+          ]
 
 encodeImport :: (P.ModuleName, P.ImportDeclarationType, Maybe P.ModuleName) -> Aeson.Value
 encodeImport (P.runModuleName -> mn, importType, map P.runModuleName -> qualifier) = case importType of

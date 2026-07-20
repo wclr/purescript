@@ -1,0 +1,3 @@
+module RebuildSpecFailedImport where
+
+import Something as Something

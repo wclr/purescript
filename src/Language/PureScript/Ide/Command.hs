@@ -25,7 +25,11 @@ import Language.PureScript.Ide.CaseSplit (WildcardAnnotations, explicitAnnotatio
 import Language.PureScript.Ide.Completion (CompletionOptions, defaultCompletionOptions)
 import Language.PureScript.Ide.Filter (Filter)
 import Language.PureScript.Ide.Matcher (Matcher)
-import Language.PureScript.Ide.Types (IdeDeclarationAnn, IdeNamespace)
+import Language.PureScript.Ide.Types (IdeDeclarationAnn, IdeNamespace, IdeLogLevel)
+
+data RebuildFile = RebuildFile { rfFile :: FilePath, rfText :: Text }
+
+data ConfigParams = ConfigParams { cpGlobs :: Maybe [FilePath], cpLogLevel :: Maybe IdeLogLevel }
 
 data Command
     = Load [P.ModuleName]
@@ -61,8 +65,11 @@ data Command
     | Import FilePath (Maybe FilePath) [Filter] ImportCommand
     | List { listType :: ListType }
     | Rebuild FilePath (Maybe FilePath) (Set P.CodegenTarget)
-    | Rebuild2 FilePath Text (Set P.CodegenTarget)
     | RebuildSync FilePath (Maybe FilePath) (Set P.CodegenTarget)
+    | RebuildOne RebuildFile (Set P.CodegenTarget)
+    | RebuildMany [RebuildFile] (Set P.CodegenTarget)
+    | RebuildAll (Set P.CodegenTarget)
+    | UpdateConfig ConfigParams
     | Cwd
     | Reset
     | Quit
@@ -79,8 +86,11 @@ commandName c = case c of
   Import{} -> "Import"
   List{} -> "List"
   Rebuild{} -> "Rebuild"
-  Rebuild2{} -> "Rebuild2"
   RebuildSync{} -> "RebuildSync"
+  RebuildOne{} -> "RebuildOne"
+  RebuildMany{} -> "RebuildMany"
+  RebuildAll{} -> "RebuildAll"
+  UpdateConfig{} -> "UpdateConfig"
   Cwd{} -> "Cwd"
   Reset{} -> "Reset"
   Quit{} -> "Quit"
@@ -118,6 +128,10 @@ instance FromJSON ListType where
       "loadedModules" -> pure LoadedModules
       "availableModules" -> pure AvailableModules
       s -> fail ("Unknown list type: " <> show s)
+
+instance FromJSON RebuildFile where
+  parseJSON = withObject "RebuildFile" $ \o -> do
+    RebuildFile <$> (o .: "file") <*> (o .: "text")
 
 instance FromJSON Command where
   parseJSON = withObject "command" $ \o -> do
@@ -178,12 +192,29 @@ instance FromJSON Command where
           <$> params .: "file"
           <*> params .:? "actualFile"
           <*> (parseCodegenTargets =<< params .:? "codegen" .!= [ "js" ])
-      "rebuild2" -> do
+      -- "rebuild2" -> do
+      --   params <- o .: "params"
+      --   Rebuild2
+      --     <$> params .: "file"
+      --     <*> params .: "text"
+      --     <*> (parseCodegenTargets =<< params .:? "codegen" .!= [ "js" ])
+      "rebuildOne" -> do
         params <- o .: "params"
-        Rebuild2
+        RebuildOne
           <$> params .: "file"
-          <*> params .: "text"
           <*> (parseCodegenTargets =<< params .:? "codegen" .!= [ "js" ])
+
+      "rebuildMany" -> do
+        params <- o .: "params"
+        RebuildMany
+          <$> params .: "files"
+          <*> (parseCodegenTargets =<< params .:? "codegen" .!= [ "js" ])
+
+
+      "rebuildAll" -> do
+          params <- o .: "params"
+          RebuildAll
+             <$> (parseCodegenTargets =<< params .:? "codegen" .!= [ "js" ])
       c -> fail ("Unknown command: " <> show c)
     where
       parseCodegenTargets ts =

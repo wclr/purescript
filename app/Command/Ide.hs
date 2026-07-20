@@ -36,7 +36,7 @@ import Language.PureScript.Ide.Types (Ide, IdeConfiguration(..), IdeEnvironment(
 import Network.Socket qualified as Network
 import Options.Applicative qualified as Opts
 import SharedCLI qualified
-import System.Directory (doesDirectoryExist, getCurrentDirectory, setCurrentDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, getCurrentDirectory, setCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO (BufferMode(..), hClose, hFlush, hSetBuffering, hSetEncoding, utf8)
 import System.IO.Error (isEOFError)
@@ -145,11 +145,15 @@ command = Opts.helper <*> subcommands where
         , confGlobsExclude = globsExcluded
         }
     ts <- newIORef Nothing
+    void $ createDirectoryIfMissing True outputPath
+    h <- openFile (outputPath </> "ide.log") AppendMode
+    logHandle <- newMVar h
     let
       env = IdeEnvironment
         { ideStateVar = ideState
         , ideConfiguration = conf
         , ideCacheDbTimestamp = ts
+        , ideLogHandle = logHandle
         }
     startServer port env
 
@@ -200,21 +204,22 @@ startServer port env = Network.withSocketsDo $ do
                       <> commandName cmd'
                       <> " took "
                       <> displayTimeSpec duration
+              $(logInfo) ("Purs ide got command: " <> commandName cmd')
               logPerf message $ do
                 result <- runExceptT $ do
                   updateCacheTimestamp >>= \case
                     Nothing -> pure ()
                     Just (before, after) -> do
-                      outputDirectory <- confOutputPath . ideConfiguration <$> ask
-                      cacheDb <- fromRight mempty <$> runExceptT (readCacheDb' outputDirectory)
-                      stVar <- ideStateVar <$> ask
-                      liftIO $ atomically $ modifyTVar stVar
-                        $ \s -> s { ideFileState = (ideFileState s) { fsCacheDb = cacheDb }}
+                      -- outputDirectory <- confOutputPath . ideConfiguration <$> ask
+                      -- cacheDb <- fromRight mempty <$> runExceptT (readCacheDb' outputDirectory)
+                      -- stVar <- ideStateVar <$> ask
+                      -- liftIO $ atomically $ modifyTVar stVar
+                      --   $ \s -> s { ideFileState = (ideFileState s) { fsCacheDb = cacheDb }}
                       -- If the cache db file was changed outside of the IDE
                       -- we trigger a reset before processing the command
-                      $(logInfo) ("cachedb was changed from: " <> show before <> ", to: " <> show after)
-                      unless (isLoadAll cmd') $
-                        void (handleCommand Reset *> handleCommand (LoadSync []))
+                      $(logInfo) ("skipped: cachedb was changed from: " <> show before <> ", to: " <> show after)
+                      -- unless (isLoadAll cmd') $
+                      --   void (handleCommand Reset *> handleCommand (LoadSync []))
                   handleCommand cmd'
                 liftIO $ catchGoneHandle $ BSL8.hPutStrLn h $ case result of
                   Right r  -> Aeson.encode r
@@ -231,6 +236,8 @@ startServer port env = Network.withSocketsDo $ do
 isLoadAll :: Command -> Bool
 isLoadAll = \case
   Load [] -> True
+  -- InitRebuild _ -> True
+  --Rebuild2 _ _ -> True
   _ -> False
 
 catchGoneHandle :: IO () -> IO ()

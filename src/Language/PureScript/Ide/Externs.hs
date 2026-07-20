@@ -9,7 +9,6 @@ import Protolude hiding (to, from, (&))
 
 import Codec.CBOR.Term as Term
 import Control.Lens (preview, view, (&), (^.))
-import "monad-logger" Control.Monad.Logger (MonadLogger, logErrorN)
 import Data.Version (showVersion)
 import Data.Text qualified as Text
 import Language.PureScript qualified as P
@@ -35,7 +34,6 @@ readExternFile fp = do
                 <> toS fp
                 <> " Expected: " <> version
                 <> " Found: " <> efVersion
-          -- logErrorN errMsg
           throwError (GeneralError errMsg)
         _ ->
           throwError (GeneralError ("Parsing the extern at: " <> toS fp <> " failed"))

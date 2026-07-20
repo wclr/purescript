@@ -23,6 +23,7 @@ module Language.PureScript.Ide.SourceFile
 
 import Protolude
 
+import Control.Concurrent.Async.Lifted qualified as A
 import Control.Parallel.Strategies (withStrategy, parList, rseq)
 import Data.Map qualified as Map
 import Language.PureScript qualified as P
@@ -30,6 +31,7 @@ import Language.PureScript.CST qualified as CST
 import Language.PureScript.Ide.Error (IdeError)
 import Language.PureScript.Ide.Types (DefinitionSites, IdeNamespace(..), IdeNamespaced(..), TypeAnnotations)
 import Language.PureScript.Ide.Util (ideReadFile)
+import Control.Monad.Trans.Control (MonadBaseControl)
 
 parseModule :: FilePath -> Text -> Either FilePath (FilePath, P.Module)
 parseModule path file =
@@ -48,22 +50,21 @@ parseModulesFromFiles paths = do
     inParallel :: [Either e (k, a)] -> [Either e (k, a)]
     inParallel = withStrategy (parList rseq)
 
-parseModule' :: FilePath -> Text -> Either FilePath (FilePath, CST.PartialResult P.Module)
-parseModule' path file =
-  case CST.parseModuleFromFile path file of
-    Left _ -> Left path
-    Right m -> Right (path, m)
-
+parseModule' :: FilePath -> Text -> Either (FilePath, P.MultipleErrors) (FilePath, Text, CST.PartialResult P.Module)
+parseModule' fp file =
+  case CST.parseModuleFromFile fp file of
+    Left parseError -> Left (fp, CST.toMultipleErrors fp parseError)
+    Right m -> Right (fp, file, m)
 
 parseModulesFromFiles'
-  :: (MonadIO m, MonadError IdeError m)
+  :: (MonadIO m, MonadError IdeError m, MonadBaseControl IO m)
   => [FilePath]
-  -> m [Either FilePath (FilePath, CST.PartialResult P.Module)]
+  -> m [Either (FilePath, P.MultipleErrors) (FilePath, Text, CST.PartialResult P.Module)]
 parseModulesFromFiles' paths = do
-  files <- traverse ideReadFile paths
+  files <- A.mapConcurrently ideReadFile paths
   pure (inParallel (map (uncurry parseModule') files))
   where
-    inParallel :: [Either e (k, a)] -> [Either e (k, a)]
+    --inParallel :: [Either e (k, t, a)] -> [Either e (k, t, a)]
     inParallel = withStrategy (parList rseq)
 
 -- | Extracts AST information from a parsed module
