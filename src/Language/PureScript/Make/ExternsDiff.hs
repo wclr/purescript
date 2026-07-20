@@ -12,7 +12,6 @@ module Language.PureScript.Make.ExternsDiff
 import Protolude hiding (check, moduleName, trace)
 
 import Data.Graph as G (graphFromEdges, reachable)
-import Data.List qualified as L
 import Data.Map qualified as M
 import Data.Set qualified as S
 
@@ -68,13 +67,13 @@ isRefRemoved _ = False
 -- present in new extern's exports) or changed in dependencies.
 getReExported :: P.ExternsFile -> P.ExternsFile -> ModuleRefsMap -> RefsWithStatus
 getReExported newExts oldExts depsDiffsMap =
-  M.fromList $ mapMaybe checkRe oldExports
+  M.fromList $ mapMaybe checkRe $ S.toList oldExports
   where
-    goRe (P.ReExportRef _ es ref) = (P.exportSourceDefinedIn es,) <$> toRefs ref
-    goRe _ = []
+    goRe (P.ReExportRef _ es ref) = S.mapMonotonic (P.exportSourceDefinedIn es,) (toRefs ref)
+    goRe _ = S.empty
 
-    oldExports = concatMap goRe (P.efExports oldExts)
-    newReExports = concatMap goRe (P.efExports newExts)
+    oldExports = foldMap goRe (P.efExports oldExts)
+    newReExports = foldMap goRe (P.efExports newExts)
     checkRe (mn, ref)
       | (mn, ref) `notElem` newReExports = Just (ref, Removed)
       | Just True <- elem ref <$> M.lookup mn depsDiffsMap = Just (ref, Updated)
@@ -83,7 +82,7 @@ getReExported newExts oldExts depsDiffsMap =
 -- Extracts declarations from old and new externs and compares them. Returns a
 -- tuple of changed refs (a form of which have changed) and unchanged refs with
 -- dependencies (refs they depend upon).
-getChanged :: P.ExternsFile -> P.ExternsFile -> ModuleRefsMap -> (RefsWithStatus, [RefWithDeps])
+getChanged :: P.ExternsFile -> P.ExternsFile -> ModuleRefsMap -> (RefsWithStatus, Set RefWithDeps)
 getChanged newExts oldExts depsDiffsMap =
   (changedRefs, unchangedRefs)
   where
@@ -99,30 +98,31 @@ getChanged newExts oldExts depsDiffsMap =
     -- class or (if the type class defined in another module) we have to
     -- recompile modules that use types defined in this module affected by the
     -- instance.
+    applyInstances :: Tuple4 Set RefWithDeps -> Tuple4 Set RefWithDeps
     applyInstances (a, r, c, u) =
       let checkType t (TypeRef t') = t' == t
           checkType _ _ = False
-          uRefs = map fst u -- Unchanged refs.
+          uRefs = mapFst u -- Unchanged refs.
           go (TypeInstanceRef _ (clsMod, cls) types)
             | clsRef <- TypeClassRef cls =
                 if clsMod == modName
                   then -- If the class is defined in this module we ensure that is marked as changed.
-                    maybe [] pure $ find ((==) clsRef) uRefs
+                    if S.member clsRef uRefs then S.singleton clsRef else S.empty
                   else case S.member clsRef <$> M.lookup clsMod depsDiffsMap of
                     Just True ->
                       -- If the type class is in another module and it has
                       -- changed we don't need to care about instance types
                       -- (because the instance change affects modules that use
                       -- the type class/its methods).
-                      []
+                      S.empty
                     _ ->
                       -- Otherwise mark instance types as changed.
-                      foldMap (\t -> filter (checkType t) uRefs) types
-          go _ = mempty
+                      foldMap (\t -> S.filter (checkType t) uRefs) types
+          go _ = S.empty
 
           -- Check class instances in added, removed and changed.
-          affected = foldMap (S.fromList . go . fst) (a <> r <> c)
-          (uc, uu) = L.partition (flip S.member affected . fst) u
+          affected = foldMap (go . fst) (a <> r <> c)
+          (uc, uu) = S.partition (flip S.member affected . fst) u
        in (a, r, c <> uc, uu)
 
     -- Group/split exported refs of the module into (added, removed, changed,
@@ -133,7 +133,7 @@ getChanged newExts oldExts depsDiffsMap =
 
     -- Make the context for fixity's data constructor search: place all
     -- known refs in the map.
-    getRefsSet (a, r, c, u) = S.fromList $ map fst (a <> r <> c <> u)
+    getRefsSet (a, r, c, u) = mapFst (a <> r <> c <> u)
     fixityCtx = M.insert modName (getRefsSet declsSplit) depsDiffsMap
 
     -- Determine which declarations where directly changed or removed by
@@ -146,10 +146,9 @@ getChanged newExts oldExts depsDiffsMap =
         , splitRefs (getTypeFixities newExts) (getTypeFixities oldExts) (pure . externsTypeFixityToRef)
         ]
 
-    withStatus status refs =  map ((,status) . fst) refs
+    withStatus status refs = M.fromSet (const status) $ mapFst refs
     changedRefs =
-      M.fromList $
-        withStatus Added added <> withStatus Removed removed <> withStatus Updated changed
+      withStatus Added added <> withStatus Removed removed <> withStatus Updated changed
 
 -- Gets set of type constructors from new externs that have changed.
 getCtorsSets :: P.ExternsFile -> P.ExternsFile -> Set Ref
@@ -168,14 +167,14 @@ getCtorsSets newExts oldExts =
 -- Takes a list unchanged local refs with dependencies and finds that are affected by
 -- changed refs. Cyclic dependencies between local refs are searched using
 -- directed graph.
-getAffectedLocal :: ModuleName -> ModuleRefsMap -> [RefWithDeps] -> Set Ref
+getAffectedLocal :: ModuleName -> ModuleRefsMap -> Set RefWithDeps -> Set Ref
 getAffectedLocal modName diffsMap unchangedRefs =
   affectedLocalRefs
   where
     hasChangedDeps (mn, ref) =
       Just True == (S.member ref <$> M.lookup mn diffsMap)
     (affectedByChanged, restLocalRefs) =
-      L.partition (any hasChangedDeps . snd) unchangedRefs
+      S.partition (any hasChangedDeps . snd) unchangedRefs
 
     -- Use graph to go though local refs and their cyclic dependencies on each other.
     -- The graph includes only local refs that depend on other local refs.
@@ -183,10 +182,11 @@ getAffectedLocal modName diffsMap unchangedRefs =
 
     -- Make graph vertexes from the rest local refs with deps and affected refs
     -- with no deps.
-    vtxs = toNode <$> restLocalRefs <> (map (const mempty) <$> affectedByChanged)
+    vtxs = toNode <$> S.toList restLocalRefs <> (map (const S.empty) <$> S.toList affectedByChanged)
     (graph, fromVtx, toVtx) = G.graphFromEdges vtxs
 
     -- Graph is a list of refs with (refs) dependencies.
+    refsGraph :: [(Ref, [Ref])]
     refsGraph = do
       (_, t, _) <- vtxs
       let v = fromMaybe (internalError "diffExterns: vertex not found") $ toVtx t
@@ -200,7 +200,7 @@ getAffectedLocal modName diffsMap unchangedRefs =
     affectedLocalRefs =
       S.fromList $
         map fst $
-          filter (any (flip elem (fst <$> affectedByChanged)) . snd) refsGraph
+          filter (any (flip S.member (mapFst affectedByChanged)) . snd) refsGraph
 
 -- Compares two externs file versions using list with diffs of dependencies.
 diffExterns :: [ExternsDiff] -> P.ExternsFile -> P.ExternsFile -> ExternsDiff
@@ -332,42 +332,45 @@ makeSearches decls depsDiffs =
     -- Add data constructors to refs if all are implicitly imported using (..).
     getCtor n (ConstructorRef tn _) = tn == n
     getCtor _ _ = False
-    getCtors n = M.keys . M.filterWithKey (const . getCtor n)
-    addCtors mn (P.TypeRef _ n Nothing) = maybe [] (getCtors n) (M.lookup mn diffsMap)
-    addCtors _ _ = []
+    getCtors n = M.keysSet . M.filterWithKey (const . getCtor n)
+    addCtors mn (P.TypeRef _ n Nothing) = foldMap (getCtors n) (M.lookup mn diffsMap)
+    addCtors _ _ = S.empty
     getRefs = (toRefs <>) . addCtors
 
     go s (P.ImportDeclaration _ mn dt qual)
       -- We return Nothing if we encounter removed refs in imports.
       | Just diffs <- M.lookup mn diffsMap
       , removed <- M.keysSet $ M.filter isRefRemoved diffs =
-          fmap ((s <>) . S.map (mn, qual,) . M.keysSet) $ case dt of
+          let
+            addIn updated = s <>
+              S.mapMonotonic (mn, qual,) (M.keysSet updated)
+          in case dt of
             P.Explicit dRefs
               | Just ref <- searchRef removed refs -> Left (mn, ref)
               | otherwise ->
                   -- Search only refs encountered in the import.
-                  Right $ M.filterWithKey (const . flip elem refs) diffs
+                  Right $ addIn $ M.filterWithKey (const . flip elem refs) diffs
               where
                 refs = foldMap (getRefs mn) dRefs
             P.Hiding dRefs
               | Just ref <- searchRef removed refs -> Left (mn, ref)
               | otherwise ->
                   -- Search only refs not encountered in the import.
-                  Right $ M.filterWithKey (const . not . flip elem refs) diffs
+                  Right $ addIn $ M.filterWithKey (const . not . flip elem refs) diffs
               where
                 refs = foldMap (getRefs mn) dRefs
             -- Search all changed refs.
-            P.Implicit -> Right diffs
+            P.Implicit -> Right $ addIn diffs
     go s _ = Right s
 
-toRefs :: P.DeclarationRef -> [Ref]
+toRefs :: P.DeclarationRef -> Set Ref
 toRefs = \case
-  P.TypeClassRef _ n -> [TypeClassRef n]
-  P.TypeOpRef _ n -> [TypeOpRef n]
-  P.TypeRef _ n c -> [TypeRef n] <> (ConstructorRef n <$> fromMaybe [] c)
-  P.ValueRef _ i -> [ValueRef i]
-  P.ValueOpRef _ n -> [ValueOpRef n]
-  _ -> []
+  P.TypeClassRef _ n -> S.singleton (TypeClassRef n)
+  P.TypeOpRef _ n -> S.singleton (TypeOpRef n)
+  P.TypeRef _ n c -> S.singleton (TypeRef n) <> foldMap (S.fromList . fmap (ConstructorRef n)) c
+  P.ValueRef _ i -> S.singleton (ValueRef i)
+  P.ValueOpRef _ n -> S.singleton (ValueOpRef n)
+  _ -> S.empty
 
 isEmpty :: ExternsDiff -> Bool
 isEmpty (ExternsDiff _ refs)
@@ -377,19 +380,19 @@ isEmpty (ExternsDiff _ refs)
 type Tuple4 m a = (m a, m a, m a, m a)
 
 -- | Returns refs as a tuple of four (added, removed, changed, unchanged).
-splitRefs :: Ord r => Eq a => [a] -> [a] -> (a -> Maybe r) -> Tuple4 [] r
+splitRefs :: Ord r => Eq a => [a] -> [a] -> (a -> Maybe r) -> Tuple4 Set r
 splitRefs new old toRef =
-  M.foldrWithKey go (added, [], [], []) oldMap
+  M.foldrWithKey go (added, S.empty, S.empty, S.empty) oldMap
   where
     toMap = M.fromList . mapMaybe (((<$>) . flip (,)) <*> toRef)
     newMap = toMap new
     oldMap = toMap old
-    added = M.keys $ M.difference newMap oldMap
+    added = M.keysSet $ M.difference newMap oldMap
     go ref decl (a, r, c, u) = case M.lookup ref newMap of
-      Nothing -> (a, r <> [ref], c, u)
+      Nothing -> (a, S.insert ref r, c, u)
       Just newDecl
-        | decl /= newDecl -> (a, r, ref : c, u)
-        | otherwise -> (a, r, c, ref : u)
+        | decl /= newDecl -> (a, r, S.insert ref c, u)
+        | otherwise -> (a, r, c, S.insert ref u)
 
 -- | Traverses the type and finds all the refs within.
 typeDeps :: P.Type a -> S.Set (ModuleName, Ref)
@@ -548,3 +551,7 @@ refineDeclaration = \case
 
 isPrimModule :: ModuleName -> Bool
 isPrimModule = flip S.member (S.fromList primModules)
+
+-- @fst@ is monotonic, so it is safe to use @S.mapMonotonic@
+mapFst :: forall a b. Set (a, b) -> Set a
+mapFst = S.mapMonotonic fst
