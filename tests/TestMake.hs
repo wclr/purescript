@@ -106,6 +106,22 @@ spec = do
 
       compileAll >>= expectCompiled ["Module"]
 
+    it "rebuilds failed modules each time" $ do
+      writeModule "A" "module A where foo = 1"
+      ((Right exts1, _), c1) <- compileAll
+
+      c1 `shouldBe` moduleNames ["A"]
+      length exts1 `shouldBe` 1
+
+      writeModule "A" "module A where foo = (1 :: String)"
+
+      compileAll >>= expectCompiledWithFailure  ["A"]
+      -- Check that failed module is compiled again on the nest run.
+      compileAll >>= expectCompiledWithFailure  ["A"]
+      -- Check if that the module is fixed without changes it is skipped.
+      writeModule "A" "module A where foo = 1"
+      compileAll >>= expectCompiled  []
+
     -- COMPILATION SCENARIOS
 
     it "does not recompile if there are no changes" $ do

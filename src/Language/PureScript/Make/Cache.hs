@@ -4,6 +4,7 @@ module Language.PureScript.Make.Cache
   , CacheDb
   , CacheInfo(..)
   , checkChanged
+  , replaceModules
   , normaliseForCache
   , cacheDbIsCurrentVersion
   , toCacheDbVersioned
@@ -24,6 +25,7 @@ import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Monoid (All(..))
+import Data.Set (Set)
 import Data.Text (Text, pack, unpack)
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 import Data.These (These(..))
@@ -176,6 +178,11 @@ checkChanged cacheDb mn basePath currentInfo = do
             pure (Map.singleton fp (newTimestamp, newHash), All (dbHash == newHash))
 
   pure (CacheInfo newInfo, getAll isUpToDate)
+
+-- | Takes set of modules from source cacheDb and copies to dest, removing absent from dest.
+replaceModules :: Set ModuleName -> CacheDb -> CacheDb -> CacheDb
+replaceModules keys sourceDb destDb =
+    Map.union (Map.restrictKeys sourceDb keys) (Map.withoutKeys destDb keys)
 
 -- | 1. Any path that is beneath our current working directory will be
 -- stored as a normalised relative path

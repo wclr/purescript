@@ -47,6 +47,7 @@ import Language.PureScript.Linter (Name (..), lint, lintImports)
 import Language.PureScript.Make.Actions as Actions
 import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
+import Language.PureScript.Make.Cache (replaceModules)
 import Language.PureScript.Make.ExternsDiff qualified as ED
 import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.ModuleDependencies (DependencyDepth (..), moduleSignature, sortModules')
@@ -224,11 +225,9 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   -- Tell prebuilt warnings.
   tell warnings
 
-  -- Write the updated build cache database to disk. There is not need to remove
-  -- failed modules and their deps from cache-db as on the next run we may have
-  -- fixed failed modules (without any changes from previously compiled or ` with
-  -- externs diffs that will not require rebuild of deps).
-  writeCacheDb newCacheDb
+  -- Write the updated build cache database to disk. We keep failed modules info from
+  -- previous run to avoid rebuild if then it's fixed with no changes.
+  writeCacheDb $ replaceModules (M.keysSet failures) cacheDb newCacheDb
 
   writePackageJson
 
