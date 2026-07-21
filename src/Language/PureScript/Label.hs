@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 module Language.PureScript.Label (Label(..)) where
 
 import Prelude
@@ -9,13 +10,14 @@ import Data.String (IsString(..))
 import Data.Aeson qualified as A
 
 import Language.PureScript.PSString (PSString)
+import Data.Data (Data)
 
 -- |
 -- Labels are used as record keys and row entry names. Labels newtype PSString
 -- because records are indexable by PureScript strings at runtime.
 --
 newtype Label = Label { runLabel :: PSString }
-  deriving (Show, Eq, Ord, IsString, Semigroup, Monoid, A.ToJSON, A.FromJSON, Generic)
+  deriving (Show, Eq, Ord, IsString, Semigroup, Monoid, A.ToJSON, A.FromJSON, Generic, Data)
 
 instance NFData Label
 instance Serialise Label

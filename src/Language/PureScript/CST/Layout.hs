@@ -166,7 +166,7 @@
 --    "body of a case of expression" by pushing 'LytOf' onto the layout stack.
 --    Insert the @of@ token into the stream of tokens.
 --
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveAnyClass, DeriveDataTypeable #-}
 module Language.PureScript.CST.Layout where
 
 import Prelude
@@ -179,6 +179,7 @@ import Data.Foldable (find)
 import Data.Function ((&))
 import GHC.Generics (Generic)
 import Language.PureScript.CST.Types (Comment, LineFeed, SourcePos(..), SourceRange(..), SourceToken(..), Token(..), TokenAnn(..))
+import Data.Data (Data)
 
 type LayoutStack = [(SourcePos, LayoutDelim)]
 
@@ -205,7 +206,7 @@ data LayoutDelim
   | LytOf
   | LytDo
   | LytAdo
-  deriving (Show, Eq, Ord, Generic, NFData, Serialise)
+  deriving (Show, Eq, Ord, Generic, NFData, Data, Serialise)
 
 isIndented :: LayoutDelim -> Bool
 isIndented = \case

@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveAnyClass, DeriveDataTypeable #-}
 -- |
 -- The core functional representation for literal values.
 --
@@ -9,6 +9,7 @@ import Codec.Serialise (Serialise)
 import Control.DeepSeq (NFData)
 import GHC.Generics (Generic)
 import Language.PureScript.PSString (PSString)
+import Data.Data (Data)
 
 -- |
 -- Data type for literal values. Parameterised so it can be used for Exprs and
@@ -39,4 +40,4 @@ data Literal a
   -- An object literal
   --
   | ObjectLiteral [(PSString, a)]
-  deriving (Eq, Ord, Show, Functor, Generic, NFData, Serialise)
+  deriving (Eq, Ord, Show, Functor, Generic, NFData, Data, Serialise)
