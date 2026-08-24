@@ -43,6 +43,7 @@ import Data.Set qualified as S
 
 import Language.PureScript.AST qualified as P
 import Language.PureScript.AST.Declarations.ChainId (ChainId (..))
+import Language.PureScript.Constants.Libs qualified as C
 import Language.PureScript.Constants.Prim (primModules)
 import Language.PureScript.Crash (internalError)
 import Language.PureScript.Environment qualified as P
@@ -89,17 +90,22 @@ isRefRemoved :: RefStatus -> Bool
 isRefRemoved Removed = True
 isRefRemoved _ = False
 
--- To get changed reexported refs, we take those which were removed (not
--- present in new extern's exports) or changed in dependencies.
+-- To get changed reexported refs, we take those which were removed (not present
+-- in new extern's exports) or changed in dependencies. Refs that are newly
+-- reexported are also included (as Added): they may conflict with names already
+-- in scope in downstream modules.
 getReExported :: P.ExternsFile -> P.ExternsFile -> ModuleRefsMap -> RefsWithStatus
 getReExported newExts oldExts depsDiffsMap =
-  M.fromList $ mapMaybe checkRe $ S.toList oldExports
+  M.union (M.fromList $ mapMaybe checkRe $ S.toList oldExports) addedRefs
   where
     goRe (P.ReExportRef _ es ref) = S.mapMonotonic (P.exportSourceDefinedIn es,) (toRefs ref)
     goRe _ = S.empty
 
     oldExports = foldMap goRe (P.efExports oldExts)
     newReExports = foldMap goRe (P.efExports newExts)
+
+    addedRefs = M.fromSet (const Added) $ S.map snd (S.difference newReExports oldExports)
+
     checkRe (mn, ref)
       | (mn, ref) `notElem` newReExports = Just (ref, Removed)
       | Just True <- elem ref <$> M.lookup mn depsDiffsMap = Just (ref, Updated)
@@ -280,7 +286,9 @@ checkDiffs (P.Module _ _ _ decls exports) diffs
         exports >>=
          listToMaybe . foldMap
           ( \case
-              P.ModuleRef _ mn -> maybeToList $ find (\(_, mn' ,_) -> mn' == Just mn ) searches
+              P.ModuleRef _ mn -> maybeToList $
+                -- For reexports via qualified and unqualified imports.
+                find (\(mn', qual, _) -> maybe (mn' == mn) (mn ==) qual) searches
               _ -> []
           )
 
@@ -337,12 +345,18 @@ checkUsage searches decls = listToMaybe anyUsages
         | otherwise -> checkValue n
       P.Constructor _ n -> checkCtor n
       P.Op _ n -> checkValueOp n
+      P.Do mbQual _ ->
+        foldMap (checkValue . mkQualified mbQual) [C.S_bind, C.S_discard]
+      P.Ado mbQual _ _ ->
+        foldMap (checkValue . mkQualified mbQual) [C.S_map, C.S_apply, C.S_pure]
+      P.UnaryMinus _ _ -> checkValue (mkQualified Nothing C.S_negate)
       _ -> mempty
 
     goBinder _ binder = case binder of
       P.ConstructorBinder _ n _ -> checkCtor n
       P.OpBinder _ n -> checkValueOp n
       _ -> mempty
+    mkQualified mbQual = P.Qualified (P.byMaybeModuleName mbQual) . P.Ident
 
 
 -- | Traverses imports and returns a set of refs to be searched though the
@@ -570,7 +584,7 @@ refineDeclaration = \case
     refineArgs = map (map (map refineType))
     refineTypeKind = \case
       -- Remove the notion of data constructors, we only compare type's left side.
-      P.DataType dt args _ -> P.DataType dt (refineDataArgs args) []
+      (P.DataType dt args _) -> (P.DataType dt (refineDataArgs args) [])
       other -> other
     refineDataArgs =
       zipWith (\idx (_, t, role) -> ("a" <> show idx, refineType <$> t, role)) [(0 :: Int)..]

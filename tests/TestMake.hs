@@ -35,7 +35,7 @@ spec = do
   -- Before each test.
   before_ cleanUp $ do
 
-        -- RESULTING EXTERNS
+    -- RESULTING EXTERNS
 
     it "returns all externs even when modules not compiled" $ do
       writeModule "A" "module A where foo = 1"
@@ -65,30 +65,36 @@ spec = do
 
       length exts2 `shouldBe` 2
 
-    -- PRESERVING WARNINGS
+    -- WARNINGS PRESERVATION
 
-    -- Warnings should are preserved even if modules are not recompiled.
     it "preserves warnings between rebuilds when compilation skipped" $ do
-      writeModule "A" $
-        T.unlines
-          [ "module A (bar) where"
-          , -- Unused function.
-            "foo :: Int"
-          , "foo = 0"
-          , "bar :: Int"
-          , "bar = 0"
-          ]
+      writeModule "A" "module A (bar) where\nfoo=0\nbar=1"
       ((_, warns), c1) <- compileAll
       c1 `shouldBe` moduleNames ["A"]
-      length (P.runMultipleErrors warns) `shouldBe` 1
+      length (P.runMultipleErrors warns) `shouldBe` 3
       --
       ((_, warns2), c2) <- compileAll
       c2 `shouldBe` moduleNames []
-      length (P.runMultipleErrors warns2) `shouldBe` 1
+      length (P.runMultipleErrors warns2) `shouldBe` 3
+
+
+    it "may optionally omit collecting preserved externs and warnings" $ do
+      writeModule "A" "module A (bar) where\nfoo=0\nbar=1"
+      ((_, warns), c1) <- compileAll
+      c1 `shouldBe` moduleNames ["A"]
+      length (P.runMultipleErrors warns) `shouldBe` 3
+
+      let makeOpts = P.defaultMakeOptions {P.moCollectAll = False}
+      ((Right exts, warns2), c2) <-
+        compileAllWithOptions makeOpts P.defaultOptions
+
+      c2 `shouldBe` moduleNames []
+      length exts `shouldBe` 0
+      length (P.runMultipleErrors warns2) `shouldBe` 0
 
     -- CACHE DB
 
-    it "recompiles if cache-db version differs from the current" $ do
+    it "recompiles all modules if compiler's version differs from cache-db version" $ do
       writeModule "Module" "module Module where\nfoo :: Int\nfoo = 1\n"
       compileAll >>= expectCompiled ["Module"]
 
@@ -106,23 +112,7 @@ spec = do
 
       compileAll >>= expectCompiled ["Module"]
 
-    it "rebuilds failed modules each time" $ do
-      writeModule "A" "module A where foo = 1"
-      ((Right exts1, _), c1) <- compileAll
-
-      c1 `shouldBe` moduleNames ["A"]
-      length exts1 `shouldBe` 1
-
-      writeModule "A" "module A where foo = (1 :: String)"
-
-      compileAll >>= expectCompiledWithFailure  ["A"]
-      -- Check that failed module is compiled again on the nest run.
-      compileAll >>= expectCompiledWithFailure  ["A"]
-      -- Check if that the module is fixed without changes it is skipped.
-      writeModule "A" "module A where foo = 1"
-      compileAll >>= expectCompiled  []
-
-    -- COMPILATION SCENARIOS
+    -- COMMON COMPILATION SCENARIOS
 
     it "does not recompile if there are no changes" $ do
       writeModule "Module" "module Module where\nfoo = 0\n"
@@ -130,7 +120,7 @@ spec = do
 
       compileAll >>= expectCompiled []
 
-    it "recompiles if files have changed" $ do
+    it "recompiles a module if file contents have changed" $ do
       writeModule "Module" "module Module where\nfoo = 0\n"
       compileAll >>= expectCompiled ["Module"]
 
@@ -169,12 +159,25 @@ spec = do
       compileSome ["A", "C"] >>= expectCompiled []
 
     it "recompiles if a module fails to compile" $ do
-      let mPath = sourcesDir </> "Module.purs"
-          moduleContent = "module Module where\nfoo :: Int\nfoo = \"not an int\"\n"
+      let mPath = sourcesDir </> "A.purs"
+          content = "module A where\nfoo :: Int\nfoo = \"not an int\"\n"
 
-      writeFile mPath timestampA moduleContent
-      compileWithFailure [mPath] `shouldReturn` moduleNames ["Module"]
-      compileWithFailure [mPath] `shouldReturn` moduleNames ["Module"]
+      writeFile mPath timestampA content
+      compileWithFailure [mPath] `shouldReturn` moduleNames ["A"]
+      compileWithFailure [mPath] `shouldReturn` moduleNames ["A"]
+
+    it "recompiles a failed module after successful compilation" $ do
+      writeModule "A" "module A where foo = 1"
+      compileAll >>= expectCompiled ["A"]
+
+      writeModule "A" "module A where foo = (1 :: String)"
+
+      compileAll >>= expectCompiledWithFailure ["A"]
+      -- Check that failed module is compiled again on the nest run.
+      compileAll >>= expectCompiledWithFailure ["A"]
+      -- Check if that the module is fixed without changes it is skipped.
+      writeModule "A" "module A where foo = 1"
+      compileAll >>= expectCompiled []
 
     it "recompiles if an FFI file was added" $ do
       writeModule "Module" "module Module where\nfoo = 0\n"
@@ -198,7 +201,8 @@ spec = do
           mContent2 = mContent1 <> "\ny :: Int\ny = 1"
 
           optsWithDocs = P.defaultOptions {P.optionsCodegenTargets = Set.fromList [P.JS, P.Docs]}
-          go opts = compileWithOptions opts mempty [mPath] >>= assertSuccess
+          makeOpts = P.defaultMakeOptions
+          go opts = compileWithOptions makeOpts opts mempty [mPath] >>= assertSuccess
 
       writeFile mPath timestampA mContent1
       go optsWithDocs `shouldReturn` moduleNames ["Module"]
@@ -215,7 +219,7 @@ spec = do
           mContent1 = "module Module where\nx :: Int\nx = 1"
           mContent2 = mContent1 <> "\ny :: Int\ny = 1"
           optsCoreFnOnly = P.defaultOptions {P.optionsCodegenTargets = Set.singleton P.CoreFn}
-          go opts = compileWithOptions opts mempty [mPath] >>= assertSuccess
+          go opts = compileWithOptions P.defaultMakeOptions opts mempty [mPath] >>= assertSuccess
 
       writeFile mPath timestampA mContent1
       go optsCoreFnOnly `shouldReturn` moduleNames ["Module"]
@@ -227,7 +231,7 @@ spec = do
       -- recompiled.
       go optsCoreFnOnly `shouldReturn` moduleNames ["Module"]
 
-    it "recompile failed deps in previous compilation" $ do
+    it "recompiles failed deps in previous compilation" $ do
       writeModule "A" "module A where\nfoo :: Int\nfoo = 0\n"
       writeModule "B" "module B where\nimport A as A\nbar :: Int\nbar = A.foo\n"
       compileAll >>= expectCompiled ["A", "B"]
@@ -272,11 +276,33 @@ spec = do
       writeFile mAPath timestampD mAContent3
       compileWithFailure [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
 
-    -- REBUILD CUT OFF: rebuilds only modules that are affected by changes.
+    -- DIFF CHECK: below tests for rebuilds of modules that are affected by changes.
 
-    -- RebuildReason:: LaterDependency
+    it "may optionally compile without diff check" $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
 
-    it "recompiles downstream in case of later dependency" $ do
+      compileAll >>= expectCompiled ["A", "B"]
+
+      writeModule "A" "module A where\nfoo = 1\n"
+      let makeOpts = P.defaultMakeOptions {P.moDiffCheck = False}
+
+      compileAllWithOptions makeOpts P.defaultOptions >>= expectCompiled ["A", "B"]
+
+    let
+      recompilesIf cause = "recompiles downstream if " <> cause
+      skipsRecompileIf cause = "does not recompile downstream if " <> cause
+      recompileAB  (textA, textA', textB) expect = do
+          writeModule "A" textA
+          writeModule "B" textB
+          compileAll >>= expectCompiled ["A", "B"]
+
+          writeModule "A" textA'
+          compileAll >>= expect
+
+    -- LaterDependency
+
+    it (recompilesIf "later dependency found") $ do
       -- C and B depends on A.
       writeModule "A" "module A where\nfoo = 0\n"
       writeModule "B" "module B where\nimport A\nbar = 1\nbaz = foo\n"
@@ -292,7 +318,7 @@ spec = do
       compileAll >>= expectCompiled ["B", "C"]
 
     -- Later dependency should only require compilation of direct downstream modules.
-    it "recompiles only direct deps in case of later dependency" $ do
+    it (skipsRecompileIf "the later dependency is indirect") $ do
       -- Only B depends on A. C not effected.
       writeModule "A" "module A where\nfoo = 0\n"
       writeModule "B" "module B where\nimport A\nbar = 1\nbaz = foo\n"
@@ -312,8 +338,8 @@ spec = do
       tsC <- getOutputTimestamp "C"
       tsC `shouldSatisfy` (<=) tsB
 
-    it "recompiles downstream in case of later dependency with transitive change" $ do
-      -- C and B depends on A. A effects C.
+    it (recompilesIf "transitive change in later dependency found") $ do
+      -- B depends on A. C depends on B. A effects C.
       writeModule "A" "module A where\nfoo = 0\n"
       writeModule "B" "module B where\nimport A\nbar = 1\nbaz = foo\n"
       writeModule "C" "module C where\nimport B\nqux = baz"
@@ -328,9 +354,9 @@ spec = do
 
       compileAll >>= expectCompiled ["B", "C"]
 
-    -- RebuildReason: UpstreamRef
+    -- DIFF CHECK:: UpstreamRef
 
-    it "recompiles downstream modules when module's externs change (Updated ref)" $ do
+    it (recompilesIf "changed ref found") $ do
       writeModule "A" "module A where\nfoo = 0\n"
       writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
 
@@ -339,7 +365,16 @@ spec = do
       writeModule "A" "module A where\nfoo = '1'\n" -- change foo type
       compileAll >>= expectCompiled ["A", "B"]
 
-    it "skips downstream rebuild when externs has not changed" $ do
+    it (recompilesIf "transitive change found") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B where\nimport A (foo)\nbar = qux\nqux = foo\n"
+      writeModule "C" "module C where\nimport B (bar)\nbaz = bar\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nfoo = '1'\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+    it (skipsRecompileIf "externs has not changed") $ do
       writeModule "A" "module A where\nfoo = 0\n"
       writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
 
@@ -348,7 +383,7 @@ spec = do
       writeModule "A" "module A where\n\nfoo = 1\n" -- no type change
       compileAll >>= expectCompiled ["A"]
 
-    it "skips downstream rebuild when externs changed but do not affect (Added ref)" $ do
+    it (skipsRecompileIf "externs changed but do not affect (Added ref)") $ do
       writeModule "A" "module A where\nfoo = 0"
       writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
 
@@ -358,7 +393,7 @@ spec = do
 
       compileAll >>= expectCompiled ["A"]
 
-    it "recompiles downstream rebuild when externs add ref which cause conflict" $ do
+    it (recompilesIf "added a ref which causes a conflict") $ do
       writeModule "A" "module A where\nfoo = 0"
       writeModule "B" "module B where\nbar = '1'\n"
       writeModule "C" "module C where\nimport A\nimport B\ncar = bar\n"
@@ -370,7 +405,7 @@ spec = do
 
       compileAll >>= expectCompiledWithFailure ["A", "C"]
 
-    it "recompiles downstream rebuild when added ref causes ScopeShadowing" $ do
+    it (recompilesIf "an added ref causes ScopeShadowing") $ do
       writeModule "A" "module A where\nfoo = 0"
       writeModule "B" "module B where\nbar = '1'\n"
       writeModule "C" "module C where\nimport A\nimport B (bar)\ncar = bar\n"
@@ -382,24 +417,138 @@ spec = do
 
       compileAll >>= expectCompiled ["A", "C"]
 
-    -- Type arguments changes.
+    -- DIFF CHECK: REEXPORTS
 
-    it "renaming type arguments doesn't cause downstream rebuild" $ do
+    it (recompilesIf "a reexported ref changed") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module E) where\nimport A (foo) as E\n"
+      writeModule "C" "module C where\nimport B as B\nbaz = B.foo\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nfoo = '1'\nbar = 1\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+    it (skipsRecompileIf "a reexported ref changed but not used") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module E) where\nimport A as E\n"
+      -- Import but not use.
+      writeModule "C" "module C where\nimport B (foo)\nx = 1\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nfoo = '1'\nbar = 1\n"
+      compileAll >>= expectCompiled ["A", "B"]
+
+    it (recompilesIf "a reexported ref removed") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module E) where\nimport A as E\n"
+      writeModule "C" "module C where\nimport B as B\nbaz = B.foo\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nbar = 1\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B", "C"]
+
+    it (recompilesIf "a ref removed from the reexporting module") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module E) where\nimport A (foo) as E\n"
+      writeModule "C" "module C where\nimport B as B\nbaz = B.foo\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      -- Stop reexporting.
+      writeModule "B" "module B where\nimport A (foo) as E\nx = 1\n"
+      compileAll >>= expectCompiledWithFailure ["B", "C"]
+
+    it (recompilesIf "a reexported ref removed (imported but not used)") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module E) where\nimport A (foo) as E\n"
+      -- Import but not use.
+      writeModule "C" "module C where\nimport B (foo) as B\nx = 1\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "B" "module B where\nimport A (foo) as E\nx = 1\n"
+      compileAll >>= expectCompiledWithFailure ["B", "C"]
+
+    it (recompilesIf "a reexported ref removed in original (imported but not used)") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module E) where\nimport A as E\n"
+      -- Import but not use.
+      writeModule "C" "module C where\nimport B (foo)\nx = 1\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nbar = 1\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B", "C"]
+
+    it (recompilesIf "a ref reexported via unqualified import changed") $ do
+      writeModule "A" "module A where\nfoo :: Int\nfoo = 0\n"
+      writeModule "B" "module B (module A) where\nimport A\n"
+      writeModule "C" "module C where\nimport B (foo)\nbar :: Int\nbar = foo\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nfoo :: Boolean\nfoo = true\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B", "C"]
+
+    it (recompilesIf "a ref reexported via unqualified import removed") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module A) where\nimport A\n"
+      writeModule "C" "module C where\nimport B (foo)\nbar = foo\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nqux = 1\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B", "C"]
+
+    it (recompilesIf "an added reexport causes a conflict") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B (module A) where\nimport A\n"
+      writeModule "D" "module D where\nbar :: Int\nbar = 2\n"
+      writeModule "C" "module C where\nimport B\nimport D\nqux :: Int\nqux = bar\n"
+      compileAll >>= expectCompiled ["A", "B", "C", "D"]
+
+      -- A new `bar` flows through B's module reexport into C's open imports,
+      -- making C's use of `bar` ambiguous.
+      writeModule "A" "module A where\nfoo = 0\nbar = 1\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B", "C"]
+
+    -- DIFF CHECK: IMPORT REFS
+
+    it (recompilesIf "a removed ref is found in explicit imports") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B where\nimport A (foo)\nbar = 1\n"
+      compileAll >>= expectCompiled ["A", "B"]
+
+      writeModule "A" "module A where\nfoo2 = 1\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B"]
+
+    it (skipsRecompileIf "a removed ref is not used") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B where\nimport A\nbar = 1\n"
+      compileAll >>= expectCompiled ["A", "B"]
+
+      writeModule "A" "module A where\nfoo2 = 1\n"
+      compileAll >>= expectCompiled ["A"]
+
+    it (recompilesIf "a changed ref is used through a hiding import") $ do
+      writeModule "A" "module A where\nfoo :: Int\nfoo = 0\nbar = 0\n"
+      writeModule "B" "module B where\nimport A hiding (bar)\nz :: Int\nz = foo\n"
+      compileAll >>= expectCompiled ["A", "B"]
+
+      writeModule "A" "module A where\nfoo :: Char\nfoo = 'x'\nbar = 0\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B"]
+
+    -- DIFF CHECK: Type arguments changes.
+
+    it (skipsRecompileIf "a type argument is renamed") $ do
       let typ = "data Foo a = Foo\n"
       let fn = "foo :: forall a. Int -> Foo a\nfoo _ = Foo\n"
 
-      writeModule "A" $ "module A where\n" <> typ <> fn
-      writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
-
-      compileAll >>= expectCompiled ["A", "B"]
-
       let typ2 = "data Foo x = Foo\n"
       let fn2 = "foo :: forall y. Int -> Foo y\nfoo _ = Foo\n"
-      writeModule "A" $ "module A where\n" <> typ2 <> fn2 <> "x = 1\n"
+      recompileAB
+        ( "module A where\n" <> typ <> fn
+        , "module A where\n" <> typ2 <> fn2 <> "x = 1\n"
+        , "module B where\nimport A as A\nbar = A.foo\n"
+        )
+        (expectCompiled ["A"])
 
-      compileAll >>= expectCompiled ["A"]
-
-    it "changing order of type arguments causes downstream rebuild" $ do
+    it (recompilesIf "the order of type arguments changed") $ do
       let fn = "foo :: forall a b. a -> b -> Int\nfoo _ _ = 1\n"
 
       writeModule "A" $ "module A where\n" <> fn
@@ -412,7 +561,7 @@ spec = do
 
       compileAll >>= expectCompiled ["A", "B"]
 
-    it "renaming data type arguments doesn't cause downstream rebuild" $ do
+    it (skipsRecompileIf "data type arguments renamed") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
 
       writeModule "A" $ "module A where\n" <> typ
@@ -426,7 +575,7 @@ spec = do
 
       compileAll >>= expectCompiled ["A"]
 
-    it "changing order of data type arguments causes downstream rebuild" $ do
+    it (recompilesIf "order of data type arguments changed") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
 
       writeModule "A" $ "module A where\n" <> typ
@@ -441,10 +590,43 @@ spec = do
 
       compileAll >>= expectCompiledWithFailure ["A", "B"]
 
+    -- Type-level is not affected by changing of args names or order.
+    it (skipsRecompileIf "data type arguments order changed (type-level dependency)") $
+      recompileAB
+        ( "module A where\ndata T a b = T a b\n"
+        , "module A where\ndata T b a = T a b\n"
+        , "module B where\nimport A\nfn :: T Int String -> Int\nfn _ = 1\n"
+        )
+        (expectCompiled ["A"])
+
+    it (recompilesIf "a kind used in a kind signature changed") $
+      recompileAB
+        ( "module A where\ndata K\n"
+        , "module A where\ndata K x\n"
+        , "module B where\nimport A\ndata Q :: K -> Type\ndata Q a = Q\n"
+        )
+        (expectCompiledWithFailure ["A", "B"])
+
+    it (recompilesIf "a role annotation changed") $
+      recompileAB
+        ( "module A where\ndata T a = T\ntype role T phantom\n"
+        , "module A where\ndata T a = T\ntype role T nominal\n"
+        , T.unlines
+            [ "module B where"
+            , "import Prim.Coerce (class Coercible)"
+            , "import A as A"
+            , "f :: Coercible (A.T Int) (A.T Boolean) => Int"
+            , "f = 1"
+            , "g :: Int"
+            , "g = f"
+            ]
+        )
+        (expectCompiledWithFailure ["A", "B"])
+
     -- This is because adding/removing a constructor may affect cases
     -- statements that do not use it explicitly.
     -- Though this potentially could be optimized while searching though the module.
-    it "adding type constructor causes downstream rebuild if it uses (another) constructor" $ do
+    it (recompilesIf "type constructor added and (another) constructor is used") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
 
       writeModule "A" $ "module A where\n" <> typ
@@ -460,7 +642,7 @@ spec = do
 
     -- If dependency uses only a type without constructors, it should not care
     -- about right side changes.
-    it "adding type constructor doesn't cause downstream rebuild if it uses only the type" $ do
+    it (skipsRecompileIf "type constructor added and only the type is used") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
 
       writeModule "A" $ "module A where\n" <> typ
@@ -472,6 +654,184 @@ spec = do
       writeModule "A" $ "module A where\n" <> typ2
 
       compileAll >>= expectCompiled ["A"]
+
+
+    -- DIFF CHECK: Checking particular places
+
+    -- Foreign import
+    it (recompilesIf "type synonym changed found in foreign import") $ do
+      writeModule "A" "module A where\ntype SynA = Int\n"
+      writeModule "B" "module B where\nimport A as A\nforeign import a :: A.SynA\n"
+      writeForeign "B" "export var a = 1;\n"
+      compileAll >>= expectCompiled ["A", "B"]
+
+      writeModule "A" "module A where\ntype SynA = String\n"
+      compileAll >>= expectCompiled ["A", "B"]
+
+    it (recompilesIf "found changed in inlined type") $
+      recompileAB
+        ( "module A where\ntype T = Int\n"
+        , "module A where\ntype T = String\n"
+        , "module B where\nimport A\nx = (1 :: T)\n"
+        )
+        (expectCompiledWithFailure ["A", "B"])
+
+    it (recompilesIf "changed found in type alias") $
+      recompileAB
+        ( "module A where\ntype SynA = Int\n"
+        , "module A where\ntype SynA = String\n"
+        , "module B where\nimport A as A\ntype SynB = Array A.SynA\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "changed found in type alias") $
+      recompileAB
+        ( "module A where\ntype SynA = Int\n"
+        , "module A where\ntype SynA = String\n"
+        , "module B where\nimport A as A\ntype SynB = Array A.SynA\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "changed found in value annotation") $
+      recompileAB
+        ( "module A where\ntype SynA = Int\n"
+        , "module A where\ntype SynA = String\n"
+        , "module B where\nimport A as A\nvalue = ([] :: Array A.SynA)\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "changed found in pattern annotation") $
+      recompileAB
+        ( "module A where\ntype SynA = Int\n"
+        , "module A where\ntype SynA = String\n"
+        , "module B where\nimport A as A\nfn = \\(_ :: Array A.SynA) -> 0\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    -- Should move?
+    it (recompilesIf "type dependency changed") $
+      recompileAB
+        ( "module A where\ntype SynA = Int\ntype SynA2 = SynA\n"
+        , "module A where\ntype SynA = String\ntype SynA2 = SynA\n"
+        , "module B where\nimport A as A\ntype SynB = Array A.SynA2\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "class member type changed (class used in signature)") $
+      recompileAB
+        ( "module A where\nclass Cls a where m1 :: a -> Int\n"
+        , "module A where\nclass Cls a where m1 :: a -> Char\n"
+        , "module B where\nimport A as A\nfn :: forall a. A.Cls a => a -> Int\nfn _ = 1\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "class member type changed (member used)") $
+      recompileAB
+        ( "module A where\nclass Cls a where m1 :: a -> Int\n"
+        , "module A where\nclass Cls a where m1 :: a -> Char\n"
+        , "module B where\nimport A as A\nfn x = A.m1 x\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "type class instance added") $
+      recompileAB
+        ( "module A where\nclass Cls a where m1 :: a -> Int\n"
+        , "module A where\nclass Cls a where m1 :: a -> Int\ninstance Cls Int where m1 _ = 1\n"
+        , "module B where\nimport A as A\nfn :: forall a. A.Cls a => a -> Int\nfn _ = 1\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "type class instance removed") $
+      recompileAB
+        ( "module A where\nclass Cls a where m1 :: a -> Int\ninstance Cls Int where m1 _ = 1\n"
+        , "module A where\nclass Cls a where m1 :: a -> Int\n"
+        , "module B where\nimport A (m1)\nx = m1 1\n"
+        )
+        (expectCompiledWithFailure ["A", "B"])
+
+    it (recompilesIf "instance added for a type") $ do
+      writeModule "A" "module A where\nclass Cls a where m1 :: a -> Int\n"
+      writeModule "B" "module B where\nimport A\nnewtype T = T Int\n"
+      writeModule "C" "module C where\nimport B\nt = T 1\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "B" "module B where\nimport A\nnewtype T = T Int\ninstance Cls T where m1 _ = 1\n"
+      compileAll >>= expectCompiled ["B", "C"]
+
+    -- If instances are changed, should recompile modules with the type as it may use class members.
+    it (recompilesIf "instance removed for a type (class depended)") $ do
+      writeModule "A" "module A where\nclass Cls a where m1 :: a -> Int\n"
+      writeModule "B" "module B where\nimport A\nnewtype T = T Int\ninstance Cls T where m1 _ = 1\n"
+      writeModule "C" "module C where\nimport A\nimport B\ni :: Int\ni = m1 (T 1)\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "B" "module B where\nimport A\nnewtype T = T Int\n"
+      compileAll >>= expectCompiledWithFailure ["B", "C"]
+
+    -- If type class is changed it will recompile member-dependent modules.
+    it (skipsRecompileIf "instance added for a type and class changed") $ do
+      writeModule "A" "module A where\nclass Cls a where m1 :: a -> Char\n"
+      writeModule "B" "module B where\nimport A\nnewtype T = T Int\n"
+      writeModule "C" "module C where\nimport B\ntype C2 = T\n"
+      compileAll >>= expectCompiled ["A", "B", "C"]
+
+      writeModule "A" "module A where\nclass Cls a where m1 :: a -> Int\n"
+      writeModule "B" "module B where\nimport A\nnewtype T = T Int\ninstance Cls T where m1 _ = 1\n"
+      compileAll >>= expectCompiled ["A", "B"]
+
+    it (recompilesIf "instances in a chain are reordered") $ do
+      let inst1 = "instance Cls Int where m _ = 1"
+      let inst2 = "instance Cls a where m _ = 2"
+      recompileAB
+        ( "module A where\nclass Cls a where m :: a -> Int\n" <> inst1 <> "\nelse " <>  inst2 <> "\n"
+        , "module A where\nclass Cls a where m :: a -> Int\n" <> inst2 <> "\nelse " <>  inst1 <> "\n"
+        , "module B where\nimport A (m)\nb = m 1\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "value op fixity changed") $
+      recompileAB
+        ( "module A where\ndata T a = T Int a\ninfixl 2 T as :+:\n"
+        , "module A where\ndata T a = T Int a\ninfixl 3 T as :+:\n"
+        , "module B where\nimport A\nt = 1 :+: \"1\"\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    it (recompilesIf "type op fixity changed") $
+      recompileAB
+        ( "module A where\ndata T a b = T a b\ninfixl 2 type T as :+:\n"
+        , "module A where\ndata T a b = T a b\ninfixl 3 type T as :+:\n"
+        , "module B where\nimport A\nfn :: Int :+: String -> Int\nfn _ = 1\n"
+        )
+        (expectCompiled ["A", "B"])
+
+    -- HIDDEN DESUGARING DEPENDENCIES: do/ado notation and unary minus
+    -- resolve to `bind`/`discard`/`map`/`apply`/`pure`/`negate` only during
+    -- desugaring, so the usage check must account for them explicitly.
+
+    it (recompilesIf "qualified-do bind removed") $
+      recompileAB
+        ( "module A where\ndata Box a = Box a\nbox = Box\nbind (Box a) f = f a\n"
+        , "module A where\ndata Box a = Box a\nbox = Box\n"
+        , "module B where\nimport A as A\nf = A.do\n  x <- A.box 1\n  A.box x\n"
+        )
+        (expectCompiledWithFailure ["A", "B"])
+
+    it (recompilesIf "qualified-ado bind removed") $
+      recompileAB
+        ( "module A where\ndata Box a = Box a\nbox = Box\nmap f (Box a) = Box (f a)\n"
+        , "module A where\ndata Box a = Box a\nbox = Box\n"
+        , "module B where\nimport A as A\nf = A.ado\n  x <- A.box 1\n  in x\n"
+        )
+        (expectCompiledWithFailure ["A", "B"])
+
+    it (recompilesIf "unary minus removed") $
+      recompileAB
+        ( "module A where\ndata N = N\nnegate n0 = n0\nn = N\n"
+        , "module A where\ndata N = N\nn = N\n"
+        , "module B where\nimport A\nm = -n\n"
+        )
+        (expectCompiledWithFailure ["A", "B"])
 
   where
 
@@ -508,6 +868,10 @@ spec = do
     compileAll = do
       sources <- listModulePaths
       compileWithResult mempty sources
+
+    compileAllWithOptions makeOpts opts = do
+      sources <- listModulePaths
+      compileWithOptions makeOpts opts mempty sources
 
     compileSome mns = do
       let sources = modulePath <$> mns
@@ -563,11 +927,12 @@ type CompileResult = (Either P.MultipleErrors [P.ExternsFile], P.MultipleErrors)
 -- rebuild was attempted, allowing the caller to set the compiler options and
 -- including the make result in the return value.
 compileWithOptions ::
+  P.MakeOptions ->
   P.Options ->
   M.Map P.ModuleName P.RebuildPolicy ->
   [FilePath] ->
   IO (CompileResult, Set P.ModuleName)
-compileWithOptions opts policyMap input = do
+compileWithOptions makeOpts opts policyMap input = do
   recompiled <- newMVar Set.empty
   moduleFiles <- readUTF8FilesT input
 
@@ -593,7 +958,7 @@ compileWithOptions opts policyMap input = do
                     liftIO $ modifyMVar_ recompiled (return . Set.insert mn)
                   _ -> pure ()
             }
-    P.make makeActions (map snd ms)
+    P.make' makeOpts makeActions (map snd ms)
 
   recompiledModules <- readMVar recompiled
   pure ((makeResult, warnings), recompiledModules)
@@ -604,7 +969,7 @@ compileWithResult ::
   M.Map P.ModuleName P.RebuildPolicy ->
   [FilePath] ->
   IO (CompileResult, Set P.ModuleName)
-compileWithResult = compileWithOptions P.defaultOptions
+compileWithResult = compileWithOptions P.defaultMakeOptions P.defaultOptions
 
 assertSuccess :: (CompileResult, Set P.ModuleName) -> IO (Set P.ModuleName)
 assertSuccess ((result, _), recompiled) =

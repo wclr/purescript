@@ -182,7 +182,7 @@ getBuildReason (BuildPlan {..}) m depsDiffs
   mn = getModuleName m
 
 data Options = Options
-  { optPreloadAllExterns :: Bool
+  { optPreloadAll :: Bool
   }
 
 type RebuildMap = M.Map ModuleName (Maybe RebuildReason, Maybe OutputTimestamp)
@@ -217,7 +217,7 @@ construct Options{..} MakeActions{..} cacheDb (sorted, graph) = do
 
   -- We only need prebuilt results for deps will be required during the build.
   let toLoadPrebuilt =
-        if optPreloadAllExterns
+        if optPreloadAll
           then prebuiltMap
           else M.filterWithKey (const . inBuildDeps) prebuiltMap
 
