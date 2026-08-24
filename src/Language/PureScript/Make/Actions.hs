@@ -200,6 +200,7 @@ data MakeActions m = MakeActions
   , updateOutputTimestamp :: ModuleName -> Maybe UTCTime -> m Bool
   -- ^ Updates the modification time of existing output files to mark them as
   -- actual.
+  , patchOutputModulePath :: ModuleName -> m Bool
   , readExterns :: ModuleName -> m (FilePath, Maybe ExternsFile)
   -- ^ Read the externs file for a module as a string and also return the actual
   -- path for the file.
@@ -327,6 +328,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     getInputTimestampsAndHashes
     getOutputTimestamp
     updateOutputTimestamp
+    patchOutputModulePath
     readExterns
     readWarnings
     codegen
@@ -404,6 +406,10 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     results <- traverse (flip setTimestamp curTime) outputPaths
     -- if something goes wrong, something failed to update, return Nothing
     pure $ and (ok : results)
+
+  patchOutputModulePath :: ModuleName -> Make Bool
+  patchOutputModulePath _mn = do
+    pure True
 
   readExterns :: ModuleName -> Make (FilePath, Maybe ExternsFile)
   readExterns mn = do

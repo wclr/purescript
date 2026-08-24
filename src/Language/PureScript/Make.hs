@@ -3,6 +3,7 @@ module Language.PureScript.Make
   , make_
   , make'
   , MakeOptions(..)
+  , defaultMakeOptions
   , rebuildModule
   -- Exported for external use (trypurescript) #4095
   , rebuildModule'
@@ -47,8 +48,9 @@ import Language.PureScript.Errors (MultipleErrors (..), SimpleErrorMessage (..),
 import Language.PureScript.Externs (ExternsFile, applyExternsFileToEnvironment, moduleToExternsFile)
 import Language.PureScript.Linter (Name (..), lint, lintImports)
 import Language.PureScript.Make.Actions as Actions
-import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
+import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..))
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
+import Language.PureScript.Make.Cache (replaceModules)
 import Language.PureScript.Make.ExternsDiff qualified as ED
 import Language.PureScript.Make.Monad as Monad
 import Language.PureScript.ModuleDependencies (DependencyDepth (..), moduleSignature, sortModules')
@@ -156,8 +158,15 @@ rebuildModule'' MakeActions{..} exEnv externs (pwarnings, m@(Module _ _ moduleNa
   return (exts, env')
 
 data MakeOptions = MakeOptions
-  { moCollectAllExterns :: Bool
+  { moCollectAll :: Bool
+  -- ^ If to collect externs and preserved warnings for modules that are not
+  -- involved in the build.
+  , moDiffCheck :: Bool
   }
+
+defaultMakeOptions :: MakeOptions
+defaultMakeOptions =
+    MakeOptions {moCollectAll = True, moDiffCheck = True}
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file
 -- and an @externs.cbor@ file.
@@ -171,7 +180,7 @@ make :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWrit
      => MakeActions m
      -> [CST.PartialResult Module]
      -> m [ExternsFile]
-make  = make' (MakeOptions {moCollectAllExterns = True})
+make  = make' defaultMakeOptions
 
 -- | Compiles in "make" mode, compiling each module separately to a @.js@ file
 -- and an @externs.cbor@ file.
@@ -181,7 +190,7 @@ make_ :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWri
      => MakeActions m
      -> [CST.PartialResult Module]
      -> m ()
-make_ ma ms = void $ make' (MakeOptions {moCollectAllExterns = False}) ma ms
+make_ ma ms = void $ make' (defaultMakeOptions {moCollectAll = False}) ma ms
 
 make' :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
      => MakeOptions
@@ -194,7 +203,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
 
   (sorted, graph) <- sortModules' Transitive (moduleSignature . CST.resPartial) ms
 
-  let opts = BuildPlan.Options {optPreloadAllExterns = moCollectAllExterns}
+  let opts = BuildPlan.Options {optPreloadAll = moCollectAll}
   (buildPlan, newCacheDb) <- BuildPlan.construct opts ma cacheDb (sorted, graph)
 
   -- Limit concurrent module builds to the number of capabilities as
@@ -214,6 +223,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
     let moduleName = getModuleName . CST.resPartial $ m
     let deps = fromMaybe (internalError "make: module not found in dependency graph.") (lookup moduleName graph)
     let directDeps = S.fromList $ map snd $ filter ((==) Direct . fst) deps
+
     buildModule lock buildPlan moduleName totalModuleCount
       (spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
@@ -236,18 +246,17 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
         BuildJobSkipped ->
           Left mempty
     in
-      M.mapEither splitResults <$> BuildPlan.collectResults buildPlan moCollectAllExterns
+      M.mapEither splitResults <$> BuildPlan.collectResults buildPlan moCollectAll
 
   let successes = fmap fst successes'
   let warnings = foldMap snd successes'
-  -- Tell prebuilt warnings.
-  tell warnings
 
-  -- Write the updated build cache database to disk. We should not update cache
-  -- info for failed modules, but we may leave previous cache info to avoid
-  -- rebuild if then it's fixed with no changes to previous working version.
-  let failed = M.keysSet failures
-  writeCacheDb $ M.union (M.restrictKeys cacheDb failed) (M.withoutKeys newCacheDb failed)
+  -- Tell prebuilt warnings.
+  when moCollectAll $ tell warnings
+
+  -- Write the updated build cache database to disk. We keep failed modules info from
+  -- previous run to avoid rebuild if then it's fixed with no changes.
+  writeCacheDb $ replaceModules (M.keysSet failures) cacheDb newCacheDb
 
   writePackageJson
 
@@ -265,7 +274,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
         $ M.lookup mn successes
 
   pure $
-    if moCollectAllExterns then
+    if moCollectAll then
       map lookupResult sortedModuleNames
     else
       mapMaybe (flip M.lookup successes) sortedModuleNames
@@ -317,7 +326,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       --
       -- The result wil contain externs and externs diffs to check against if
       -- the build is needed.
-      depsExts <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
+      depsExts <- fmap unzip . sequence <$> traverse (BuildPlan.getResult buildPlan) deps
 
       let prevResult = BuildPlan.getPrevResult buildPlan moduleName
 
@@ -335,7 +344,10 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
         Just (externs, mbDiffs) -> do
           -- If any of deps returns Nothing for diff, means it had no previous result.
           -- Also only diffs of direct deps are needed.
-          let depsDiffs = filter (isDirect . ED.edModuleName) <$> sequenceA mbDiffs
+          let depsDiffs =
+                if moDiffCheck then filter (isDirect . ED.edModuleName) <$> sequenceA mbDiffs
+                else Nothing
+
           moduleIndex <- getModuleIndex
 
           catchFailure moduleIndex $ do
@@ -348,7 +360,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                 -- Prebuilt result warnings already contain parser warnings.
                 pure $ BuildJobSucceeded Nothing warnings exts (Just (ED.emptyDiff moduleName))
 
-              Right   br -> do
+              Right br -> do
                 start <- liftBase getCurrentTime
                 -- We need to ensure that all dependencies have been included in Env.
                 C.modifyMVar_ (bpEnv buildPlan) $ \env -> do

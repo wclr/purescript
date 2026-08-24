@@ -548,6 +548,7 @@ rebuildMany files targets = do
                 S.insertModuleUpdate mn (Left curTime)
                 S.updateExternsTimestamp mn curTime
               pure True
+          , P.patchOutputModulePath = \_ -> pure False
           , P.codegen = rebuildCodegen env Nothing --(Just compiledRef)
           , P.ffiCodegen = \_ -> pure ()
           , P.writeCacheDb = \newCacheDb -> do
@@ -560,7 +561,7 @@ rebuildMany files targets = do
           } & enableForeignCheck foreigns targets
   -- Actual seems we can use just "make_"? (though it assumes gathering warnings)
   -- Collect: False we don't need as we gather it in the codegen handler.
-  let makeOptions = MakeOptions {moCollectAllExterns = False}
+  let makeOptions = MakeOptions {moCollectAll = False, moDiffCheck = True}
 
   (makeResult, warnings) <- logPerf (labelTimespec "RebuildMany make") $
     liftIO $ runMakeWithNotFound P.defaultOptions
@@ -762,7 +763,7 @@ rebuildAll codegenTargets = do
           } & enableForeignCheck foreigns codegenTargets
 
   -- Collect: False we don't need as we gather it in the codegen handler.
-  let makeOptions = MakeOptions {moCollectAllExterns = False}
+  let makeOptions = MakeOptions {moCollectAll = False, moDiffCheck = True}
   (makeResult, warnings) <- logPerf (labelTimespec "rebuildAll: make")
     -- $ liftIO $ P.runMake options $ do
       --P.make' makeOptions makeActions (map snd partialModules)

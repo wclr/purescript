@@ -4,7 +4,7 @@ module Language.PureScript.Make.Cache
   , CacheDb
   , CacheInfo(..)
   , checkChanged
-  , removeModules
+  , replaceModules
   , normaliseForCache
   , cacheDbIsCurrentVersion
   , toCacheDbVersioned
@@ -179,8 +179,13 @@ checkChanged cacheDb mn basePath currentInfo = do
 
   pure (CacheInfo newInfo, getAll isUpToDate)
 
--- | Remove any modules from the given set from the cache database; used when
--- they failed to build.
+-- | Takes set of modules from source cacheDb and copies to dest, removing absent from dest.
+replaceModules :: Set ModuleName -> CacheDb -> CacheDb -> CacheDb
+replaceModules keys sourceDb destDb =
+    Map.union (Map.restrictKeys sourceDb keys) (Map.withoutKeys destDb keys)
+
+
+-- | Remove any modules from the given set from the cache database.
 removeModules :: Set ModuleName -> CacheDb -> CacheDb
 removeModules = flip Map.withoutKeys
 
