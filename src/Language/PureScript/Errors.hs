@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveAnyClass, DeriveDataTypeable #-}
 module Language.PureScript.Errors
   ( module Language.PureScript.AST
   , module Language.PureScript.Errors
@@ -20,6 +20,7 @@ import Data.Bifunctor (first, second)
 import Data.Bitraversable (bitraverse)
 import Data.Char (isSpace)
 import Data.Containers.ListUtils (nubOrdOn)
+import Data.Data (Data)
 import Data.Either (partitionEithers)
 import Data.Foldable (fold)
 import Data.Function (on)
@@ -200,12 +201,12 @@ data SimpleErrorMessage
   | CannotDeriveInvalidConstructorArg (Qualified (ProperName 'ClassName)) [Qualified (ProperName 'ClassName)] Bool
   | CannotSkipTypeApplication SourceType
   | CannotApplyExpressionOfTypeOnType SourceType SourceType
-  deriving (Show, Generic, NFData, Serialise)
+  deriving (Show, Generic, NFData, Data, Serialise)
 
 data ErrorMessage = ErrorMessage
   [ErrorMessageHint]
   SimpleErrorMessage
-  deriving (Show, Generic, NFData, Serialise)
+  deriving (Show, Generic, NFData, Data, Serialise)
 
 newtype ErrorSuggestion = ErrorSuggestion Text
 
@@ -374,7 +375,7 @@ errorCode em = case unwrapErrorMessage em of
 newtype MultipleErrors = MultipleErrors
   { runMultipleErrors :: [ErrorMessage]
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
   deriving newtype (Semigroup, Monoid, NFData, Serialise)
 
 

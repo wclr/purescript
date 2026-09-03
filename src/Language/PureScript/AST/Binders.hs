@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveAnyClass, DeriveDataTypeable #-}
 -- |
 -- Case binders
 --
@@ -14,6 +14,7 @@ import Language.PureScript.AST.Literals (Literal(..))
 import Language.PureScript.Names (Ident, OpName, OpNameType(..), ProperName, ProperNameType(..), Qualified)
 import Language.PureScript.Comments (Comment)
 import Language.PureScript.Types (SourceType)
+import Data.Data (Data)
 
 -- |
 -- Data type for binders
@@ -65,7 +66,7 @@ data Binder
   -- A binder with a type annotation
   --
   | TypedBinder SourceType Binder
-  deriving (Show, Generic, NFData, Serialise)
+  deriving (Show, Generic, NFData, Data, Serialise)
 
 -- Manual Eq and Ord instances for `Binder` were added on 2018-03-05. Comparing
 -- the `SourceSpan` values embedded in some of the data constructors of `Binder`
