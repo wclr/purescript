@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveAnyClass, DeriveDataTypeable #-}
 -- | This module contains data types for the entire PureScript surface language. Every
 -- token is represented in the tree, and every token is annotated with
 -- whitespace and comments (both leading and trailing). This means one can write
@@ -10,6 +10,7 @@ module Language.PureScript.CST.Types where
 
 import Prelude
 
+import Codec.Serialise (Serialise)
 import Control.DeepSeq (NFData)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
@@ -18,34 +19,43 @@ import GHC.Generics (Generic)
 import Language.PureScript.Names qualified as N
 import Language.PureScript.Roles qualified as R
 import Language.PureScript.PSString (PSString)
+import Data.Data (Data)
 
 data SourcePos = SourcePos
   { srcLine :: {-# UNPACK #-} !Int
   , srcColumn :: {-# UNPACK #-} !Int
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData, Data)
 
 data SourceRange = SourceRange
   { srcStart :: !SourcePos
   , srcEnd :: !SourcePos
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData, Data)
+
+instance Serialise SourcePos
+instance Serialise SourceRange
+
+instance Serialise TokenAnn
+instance Serialise SourceStyle
+instance Serialise Token
+instance Serialise SourceToken
 
 data Comment l
   = Comment !Text
   | Space {-# UNPACK #-} !Int
   | Line !l
-  deriving (Show, Eq, Ord, Generic, Functor, NFData)
+  deriving (Show, Eq, Ord, Generic, Functor, NFData, Data, Serialise)
 
 data LineFeed = LF | CRLF
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, NFData, Data, Serialise)
 
 data TokenAnn = TokenAnn
   { tokRange :: !SourceRange
   , tokLeadingComments :: ![Comment LineFeed]
   , tokTrailingComments :: ![Comment Void]
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData, Data)
 
 data SourceStyle = ASCII | Unicode
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, NFData, Data)
 
 data Token
   = TokLeftParen
@@ -81,16 +91,16 @@ data Token
   | TokLayoutSep
   | TokLayoutEnd
   | TokEof
-  deriving (Show, Eq, Ord, Generic, NFData)
+  deriving (Show, Eq, Ord, Generic, NFData, Data)
 
 data SourceToken = SourceToken
   { tokAnn :: !TokenAnn
   , tokValue :: !Token
-  } deriving (Show, Eq, Ord, Generic, NFData)
+  } deriving (Show, Eq, Ord, Generic, NFData, Data)
 
 data Ident = Ident
   { getIdent :: Text
-  } deriving (Show, Eq, Ord, Generic)
+  } deriving (Show, Eq, Ord, Generic, NFData, Data)
 
 data Name a = Name
   { nameTok :: SourceToken
@@ -194,10 +204,19 @@ data DataMembers a
   | DataEnumerated a (Delimited (Name (N.ProperName 'N.ConstructorName)))
   deriving (Show, Eq, Ord, Functor, Foldable, Traversable, Generic)
 
+data DeriveClass = DeriveClass
+  { dcClass :: QualifiedName (N.ProperName 'N.ClassName)
+  } deriving (Show, Eq, Ord, Generic)
+
+data DeriveClause = DeriveClause
+  { dclKeyword :: SourceToken
+  , dclClasses :: Wrapped (Separated DeriveClass)
+  } deriving (Show, Eq, Ord, Generic)
+
 data Declaration a
-  = DeclData a (DataHead a) (Maybe (SourceToken, Separated (DataCtor a)))
+  = DeclData a (DataHead a) (Maybe (SourceToken, Separated (DataCtor a))) [DeriveClause]
   | DeclType a (DataHead a) SourceToken (Type a)
-  | DeclNewtype a (DataHead a) SourceToken (Name (N.ProperName 'N.ConstructorName)) (Type a)
+  | DeclNewtype a (DataHead a) SourceToken (Name (N.ProperName 'N.ConstructorName)) (Type a) [DeriveClause]
   | DeclClass a (ClassHead a) (Maybe (SourceToken, NonEmpty (Labeled (Name Ident) (Type a))))
   | DeclInstanceChain a (Separated (Instance a))
   | DeclDerive a SourceToken (Maybe SourceToken) (InstanceHead a)
