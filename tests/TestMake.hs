@@ -17,8 +17,7 @@ import Data.Map qualified as M
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as T
-import Data.Time.Calendar (fromGregorian)
-import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
+import Data.Time.Clock (UTCTime (..))
 import Data.Version (showVersion)
 
 import Paths_purescript qualified as Paths
@@ -137,18 +136,6 @@ spec = do
       writeModule "Module" content
       compileAll >>= expectCompiled []
 
-    -- Allow to rename/move module's source file without recompilation.
-    -- This behaviour is changed, previously in was recompiled.
-    it "does not recompile if the file path for a module has changed" $ do
-      let content = "module Module where\nfoo = 0\n"
-
-      writeModule "Module" content
-      compileAll >>= expectCompiled ["Module"]
-      deleteModule "Module"
-
-      writeModule "Module2" content
-      compileAll >>= expectCompiled []
-
     it "does not necessarily recompile modules which were not part of the previous batch" $ do
       writeModule "A" "module A where\nfoo = 0\n"
       writeModule "B" "module B where\nimport A (foo)\nbar = foo\n"
@@ -159,12 +146,9 @@ spec = do
       compileSome ["A", "C"] >>= expectCompiled []
 
     it "recompiles if a module fails to compile" $ do
-      let mPath = sourcesDir </> "A.purs"
-          content = "module A where\nfoo :: Int\nfoo = \"not an int\"\n"
-
-      writeFile mPath timestampA content
-      compileWithFailure [mPath] `shouldReturn` moduleNames ["A"]
-      compileWithFailure [mPath] `shouldReturn` moduleNames ["A"]
+      writeModule "A" "module A where\nfoo :: Int\nfoo = \"not an int\"\n"
+      compileSome ["A"] >>= expectCompiledWithFailure ["A"]
+      compileSome ["A"] >>= expectCompiledWithFailure ["A"]
 
     it "recompiles a failed module after successful compilation" $ do
       writeModule "A" "module A where foo = 1"
@@ -204,9 +188,9 @@ spec = do
           makeOpts = P.defaultMakeOptions
           go opts = compileWithOptions makeOpts opts mempty [mPath] >>= assertSuccess
 
-      writeFile mPath timestampA mContent1
+      writeModule "Module" mContent1
       go optsWithDocs `shouldReturn` moduleNames ["Module"]
-      writeFile mPath timestampB mContent2
+      writeModule "Module" mContent2
       -- See Note [Sleeping to avoid flaky tests]
       threadDelay oneSecond
       go P.defaultOptions `shouldReturn` moduleNames ["Module"]
@@ -221,9 +205,9 @@ spec = do
           optsCoreFnOnly = P.defaultOptions {P.optionsCodegenTargets = Set.singleton P.CoreFn}
           go opts = compileWithOptions P.defaultMakeOptions opts mempty [mPath] >>= assertSuccess
 
-      writeFile mPath timestampA mContent1
+      writeModule "Module" mContent1
       go optsCoreFnOnly `shouldReturn` moduleNames ["Module"]
-      writeFile mPath timestampB mContent2
+      writeModule "Module" mContent2
       -- See Note [Sleeping to avoid flaky tests]
       threadDelay oneSecond
       go P.defaultOptions `shouldReturn` moduleNames ["Module"]
@@ -231,7 +215,66 @@ spec = do
       -- recompiled.
       go optsCoreFnOnly `shouldReturn` moduleNames ["Module"]
 
-    it "recompiles failed deps in previous compilation" $ do
+    -- If a module is rename/moved it is not recompiled but build artifacts
+    -- should be updated to contain new source module path.
+    it "does not recompile if the a module was renamed, but updates artifacts" $ do
+      let
+        content = "module Module where\nfoo = 0\n"
+        makeOpts = P.defaultMakeOptions
+        opts = P.defaultOptions {P.optionsCodegenTargets = Set.fromList [P.JS, P.JSSourceMap, P.CoreFn, P.Docs]}
+        orgName = "Module"
+        movedName = "Module2"
+        dupBackslash = T.replace "\\" "\\\\" -- on Windows paths are escaped
+        toSlashPath = T.replace "\\" "/" -- source maps always have unix-normalized source path
+        orgPath = sourcesDir </> T.unpack orgName <> ".purs"
+        movedPath = sourcesDir </> T.unpack movedName <> ".purs"
+
+        checkText' transformFp text = do
+          text `shouldSatisfy` T.isInfixOf (dupBackslash $ transformFp $ T.pack movedPath)
+          text `shouldSatisfy` (not . T.isInfixOf (dupBackslash $ transformFp $ T.pack orgPath))
+        checkFile' transformFp fileName = do
+          text <- readUTF8FileT (outputDir </> T.unpack orgName </> fileName)
+          checkText' transformFp text
+        checkText = checkText' id
+        checkFile = checkFile' id
+
+
+      writeModule orgName content
+      compileAllWithOptions makeOpts opts >>= expectCompiled ["Module"]
+      deleteModule orgName
+
+      writeModule movedName content
+
+      ((Right exts, warns), compiled) <- compileAllWithOptions makeOpts opts
+      compiled `shouldBe` moduleNames []
+
+      -- Check returned externs/warnings.
+      checkText (T.pack $ show exts)
+      checkText (T.pack $ show warns)
+
+      checkFile "corefn.json"
+      checkFile "docs.json"
+      checkFile' toSlashPath "index.js.map"
+
+      -- Check that updated externs/warnings where saved to the disk.
+      ((Right exts', warns'), _) <- compileAll
+      checkText (T.pack $ show exts')
+      checkText (T.pack $ show warns')
+
+    -- DOWNSTREAM COMPILATION
+
+    let
+      recompilesIf cause = "recompiles downstream if " <> cause
+      skipsRecompileIf cause = "does not recompile downstream if " <> cause
+      recompileAB  (textA, textA', textB) expect = do
+          writeModule "A" textA
+          writeModule "B" textB
+          compileAll >>= expectCompiled ["A", "B"]
+
+          writeModule "A" textA'
+          compileAll >>= expect
+
+    it (recompilesIf "failed in previous compilation") $ do
       writeModule "A" "module A where\nfoo :: Int\nfoo = 0\n"
       writeModule "B" "module B where\nimport A as A\nbar :: Int\nbar = A.foo\n"
       compileAll >>= expectCompiled ["A", "B"]
@@ -246,7 +289,7 @@ spec = do
       writeModule "A" "module A where\nfoo :: Char\nfoo = '0'\nfar = 1"
       compileAll >>= expectCompiledWithFailure ["A", "B"]
 
-    it "does not recompile not affected deps after the error fixed" $ do
+    it (skipsRecompileIf "not affected after the dependency error fixed") $ do
       writeModule "A" "module A where\nfoo :: Int\nfoo = 0\n"
       writeModule "B" "module B where\nimport A as A\nbar :: Int\nbar = A.foo\n"
       compileAll >>= expectCompiled ["A", "B"]
@@ -259,48 +302,46 @@ spec = do
 
     -- If a module failed to compile, then the error is fixed and there are
     -- effective changes for downstream modules, they should be recompiled.
-    it "recompiles affected deps after the error fixed" $ do
-      let mAPath = modulePath "A"
-          mBPath = modulePath "B"
-          mAContent1 = "module A where\nfoo :: Int\nfoo = 0\n"
-          mAContent2 = "module A where\nfoo :: Char\nfoo = 0\n"
-          mAContent3 = "module A where\nfoo :: Char\nfoo = '0'\n"
-          mBContent = "module B where\nimport A as A\nbar :: Int\nbar = A.foo\n"
+    it (recompilesIf "affected after the dependency error fixed") $ do
+      writeModule "A" "module A where\nfoo :: Int\nfoo = 0\n"
+      writeModule "B" "module B where\nimport A as A\nbar :: Int\nbar = A.foo\n"
+      compileAll >>= expectCompiled ["A", "B"]
 
-      writeFile mAPath timestampA mAContent1
-      writeFile mBPath timestampB mBContent
-      compile [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
+      writeModule "A" "module A where\nfoo :: Char\nfoo = 0\n"
+      compileAll >>= expectCompiledWithFailure ["A"]
 
-      writeFile mAPath timestampC mAContent2
-      compileWithFailure [mAPath, mBPath] `shouldReturn` moduleNames ["A"]
-      writeFile mAPath timestampD mAContent3
-      compileWithFailure [mAPath, mBPath] `shouldReturn` moduleNames ["A", "B"]
+      writeModule "A" "module A where\nfoo :: Char\nfoo = '0'\n"
+      compileAll >>= expectCompiledWithFailure ["A", "B"]
 
-    -- DIFF CHECK: below tests for rebuilds of modules that are affected by changes.
-
-    it "may optionally compile without diff check" $ do
+    it (recompilesIf "renamed/moved and affected") $ do
       writeModule "A" "module A where\nfoo = 0\n"
-      writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
+      let contentB = "module B where\nimport A\nbar = 1\nbaz = foo\n"
+      writeModule "B" contentB
 
       compileAll >>= expectCompiled ["A", "B"]
 
+      threadDelay oneSecond
+
+      deleteModule "B"
+      writeModule "A" "module A where\nfoo = '1'\n"
+      writeModule "B2" contentB
+
+      compileAll >>= expectCompiled ["A", "B"]
+
+    it (skipsRecompileIf "renamed/moved and not affected") $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      let contentB = "module B where\nimport A\nbar = 1\nbaz = foo\n"
+      writeModule "B" contentB
+
+      compileAll >>= expectCompiled ["A", "B"]
+
+      threadDelay oneSecond
+
+      deleteModule "B"
       writeModule "A" "module A where\nfoo = 1\n"
-      let makeOpts = P.defaultMakeOptions {P.moDiffCheck = False}
+      writeModule "B2" contentB
 
-      compileAllWithOptions makeOpts P.defaultOptions >>= expectCompiled ["A", "B"]
-
-    let
-      recompilesIf cause = "recompiles downstream if " <> cause
-      skipsRecompileIf cause = "does not recompile downstream if " <> cause
-      recompileAB  (textA, textA', textB) expect = do
-          writeModule "A" textA
-          writeModule "B" textB
-          compileAll >>= expectCompiled ["A", "B"]
-
-          writeModule "A" textA'
-          compileAll >>= expect
-
-    -- LaterDependency
+      compileAll >>= expectCompiled ["A"]
 
     it (recompilesIf "later dependency found") $ do
       -- C and B depends on A.
@@ -316,6 +357,19 @@ spec = do
       _ <- compileOne "A"
 
       compileAll >>= expectCompiled ["B", "C"]
+
+    -- DIFF CHECK: below tests for rebuilds of modules that are affected by changes.
+
+    it "may optionally compile without diff check" $ do
+      writeModule "A" "module A where\nfoo = 0\n"
+      writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
+
+      compileAll >>= expectCompiled ["A", "B"]
+
+      writeModule "A" "module A where\nfoo = 1\n"
+      let makeOpts = P.defaultMakeOptions {P.moDiffCheck = False}
+
+      compileAllWithOptions makeOpts P.defaultOptions >>= expectCompiled ["A", "B"]
 
     -- Later dependency should only require compilation of direct downstream modules.
     it (skipsRecompileIf "the later dependency is indirect") $ do
@@ -549,46 +603,37 @@ spec = do
         (expectCompiled ["A"])
 
     it (recompilesIf "the order of type arguments changed") $ do
-      let fn = "foo :: forall a b. a -> b -> Int\nfoo _ _ = 1\n"
-
-      writeModule "A" $ "module A where\n" <> fn
-      writeModule "B" "module B where\nimport A as A\nbar = A.foo\n"
-
-      compileAll >>= expectCompiled ["A", "B"]
-
+      let fn1 = "foo :: forall a b. a -> b -> Int\nfoo _ _ = 1\n"
       let fn2 = "foo :: forall b a. a -> b -> Int\nfoo _ _ = 1\n"
-      writeModule "A" $ "module A where\n" <> fn2
-
-      compileAll >>= expectCompiled ["A", "B"]
+      recompileAB
+        ( "module A where\n" <> fn1
+        , "module A where\n" <> fn2
+        , "module B where\nimport A as A\nbar = A.foo\n"
+        )
+        (expectCompiled ["A", "B"])
 
     it (skipsRecompileIf "data type arguments renamed") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
-
-      writeModule "A" $ "module A where\n" <> typ
-      writeModule "B" "module B where\nimport A\nbar = (Foo 1 :: Baz Int String)\n"
-
-      compileAll >>= expectCompiled ["A", "B"]
-
       -- Rename a <-> b, this doesn't change types.
       let typ2 = "data Baz b a = Foo b | Bar a\n"
-      writeModule "A" $ "module A where\n" <> typ2
-
-      compileAll >>= expectCompiled ["A"]
+      recompileAB
+        ( "module A where\n" <> typ
+        , "module A where\n" <> typ2
+        , "module B where\nimport A\nbar = (Foo 1 :: Baz Int String)\n"
+        )
+        (expectCompiled ["A"])
 
     it (recompilesIf "order of data type arguments changed") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
-
-      writeModule "A" $ "module A where\n" <> typ
-      writeModule "B" "module B where\nimport A\nbar = (Foo 1 :: Baz Int String)\n"
-
-      compileAll >>= expectCompiled ["A", "B"]
-
       -- Changing a <-> b order (on the left) will cause change in forall
       -- signature of constructors.
       let typ2 = "data Baz b a = Foo a | Bar b\n"
-      writeModule "A" $ "module A where\n" <> typ2
-
-      compileAll >>= expectCompiledWithFailure ["A", "B"]
+      recompileAB
+        ( "module A where\n" <> typ
+        , "module A where\n" <> typ2
+        , "module B where\nimport A\nbar = (Foo 1 :: Baz Int String)\n"
+        )
+        (expectCompiledWithFailure ["A", "B"])
 
     -- Type-level is not affected by changing of args names or order.
     it (skipsRecompileIf "data type arguments order changed (type-level dependency)") $
@@ -628,33 +673,25 @@ spec = do
     -- Though this potentially could be optimized while searching though the module.
     it (recompilesIf "type constructor added and (another) constructor is used") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
-
-      writeModule "A" $ "module A where\n" <> typ
-      writeModule "B" "module B where\nimport A\nbar = (Foo 1 :: Baz Int String)\n"
-
-      compileAll >>= expectCompiled ["A", "B"]
-
       let typ2 = "data Baz b a = Foo b | Bar a | Car\n"
-      writeModule "A" $ "module A where\n" <> typ2
-
-      -- As B uses constructor adding constructor affects
-      compileAll >>= expectCompiled ["A", "B"]
+      recompileAB
+        ( "module A where\n" <> typ
+        , "module A where\n" <> typ2
+        , "module B where\nimport A\nbar = (Foo 1 :: Baz Int String)\n"
+        )
+        (expectCompiled ["A", "B"])
 
     -- If dependency uses only a type without constructors, it should not care
     -- about right side changes.
     it (skipsRecompileIf "type constructor added and only the type is used") $ do
       let typ = "data Baz a b = Foo a | Bar b\n"
-
-      writeModule "A" $ "module A where\n" <> typ
-      writeModule "B" "module B where\nimport A\nbar (x :: Baz String Int) = 1"
-
-      compileAll >>= expectCompiled ["A", "B"]
-
       let typ2 = "data Baz b a = Foo b | Bar a | Car\n"
-      writeModule "A" $ "module A where\n" <> typ2
-
-      compileAll >>= expectCompiled ["A"]
-
+      recompileAB
+        ( "module A where\n" <> typ
+        , "module A where\n" <> typ2
+        , "module B where\nimport A\nbar (x :: Baz String Int) = 1"
+        )
+        (expectCompiled ["A"])
 
     -- DIFF CHECK: Checking particular places
 
@@ -888,16 +925,6 @@ spec = do
       compiled <- assertFailure r
       compiled `shouldBe` moduleNames mns
 
-
-utcMidnightOnDate :: Integer -> Int -> Int -> UTCTime
-utcMidnightOnDate year month day = UTCTime (fromGregorian year month day) (secondsToDiffTime 0)
-
-timestampA, timestampB, timestampC, timestampD :: UTCTime
-timestampA = utcMidnightOnDate 2019 1 1
-timestampB = utcMidnightOnDate 2019 1 2
-timestampC = utcMidnightOnDate 2019 1 3
-timestampD = utcMidnightOnDate 2019 1 4
-
 oneSecond :: Int
 oneSecond = 10 ^ (5 :: Int) -- microseconds.
 
@@ -986,16 +1013,6 @@ assertFailure ((result, _), recompiled) =
       pure recompiled
     Right _ ->
       fail "should compile with errors"
-
--- | Compile, returning the set of modules which were rebuilt, and failing if
--- any errors occurred.
-compile :: [FilePath] -> IO (Set P.ModuleName)
-compile input =
-  compileWithResult mempty input >>= assertSuccess
-
-compileWithFailure :: [FilePath] -> IO (Set P.ModuleName)
-compileWithFailure input =
-  compileWithResult mempty input >>= assertFailure
 
 writeFile :: FilePath -> UTCTime -> T.Text -> IO ()
 writeFile path mtime contents = do

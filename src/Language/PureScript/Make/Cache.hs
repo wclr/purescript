@@ -3,6 +3,7 @@ module Language.PureScript.Make.Cache
   , hash
   , CacheDb
   , CacheInfo(..)
+  , UpToDate(..)
   , checkChanged
   , replaceModules
   , normaliseForCache
@@ -119,6 +120,9 @@ mapFilePaths cur =
         (fp' : _) -> fp'
         _ -> fp
 
+data UpToDate = ContentsChanged | FilePathChanged | UpToDate
+  deriving (Show, Eq)
+
 -- | Given a module name, and a map containing the associated input files
 -- together with current metadata i.e. timestamps and hashes, check whether the
 -- input files have changed, based on comparing with the database stored in the
@@ -144,13 +148,17 @@ checkChanged
   -> ModuleName
   -> FilePath
   -> Map FilePath (UTCTime, m ContentHash)
-  -> m (CacheInfo, Bool)
+  -> m (CacheInfo, UpToDate)
 checkChanged cacheDb mn basePath currentInfo = do
 
   -- Replace paths in cachedDb entry with paths from new info to handle module
   -- file rename/move without recompilation.
-  let dbInfo = mapFilePaths currentInfo
-        $ unCacheInfo $ fromMaybe mempty (Map.lookup mn cacheDb)
+  let currentDbInfo = unCacheInfo $ fromMaybe mempty (Map.lookup mn cacheDb)
+      dbInfo = mapFilePaths currentInfo currentDbInfo
+
+      wasMoved = Map.keys currentDbInfo /= Map.keys currentInfo
+      toResult True = if wasMoved then FilePathChanged else UpToDate
+      toResult False = ContentsChanged
 
   (newInfo, isUpToDate) <-
     fmap mconcat $
@@ -177,7 +185,7 @@ checkChanged cacheDb mn basePath currentInfo = do
             newHash <- getHash
             pure (Map.singleton fp (newTimestamp, newHash), All (dbHash == newHash))
 
-  pure (CacheInfo newInfo, getAll isUpToDate)
+  pure (CacheInfo newInfo, toResult $ getAll isUpToDate)
 
 -- | Takes set of modules from source cacheDb and copies to dest, removing absent from dest.
 replaceModules :: Set ModuleName -> CacheDb -> CacheDb -> CacheDb

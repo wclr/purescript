@@ -24,7 +24,7 @@ import Control.Monad.Reader (asks)
 import Control.Monad.Supply (SupplyT)
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Writer.Class (MonadWriter(..))
-import Data.Aeson (Value(String), (.=), object)
+import Data.Aeson (Value(String), (.=), object, ToJSON, FromJSON)
 import Data.Bifunctor (bimap, first)
 import Data.Either (partitionEithers)
 import Data.Foldable (for_)
@@ -49,10 +49,11 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.CST qualified as CST
 import Language.PureScript.Docs.Prim qualified as Docs.Prim
 import Language.PureScript.Docs.Types qualified as Docs
-import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage', nonEmpty, ErrorMessage (..), onErrorMessages, replaceSpanName, runMultipleErrors)
+import Language.PureScript.Errors (MultipleErrors, SimpleErrorMessage(..), errorMessage, errorMessage', nonEmpty, runMultipleErrors)
 import Language.PureScript.Externs (ExternsFile, externsFileName)
-import Language.PureScript.Make.Monad (Make, copyFile, getCurrentTime, getTimestamp, getTimestampMaybe, hashFile, makeIO, readExternsFile, readWarningsFile, readJSONFile, readTextFile, setTimestamp, writeCborFile, writeJSONFile, writeTextFile, removeFileIfExists)
+import Language.PureScript.Make.Monad (Make, copyFile, getCurrentTime, getTimestamp, getTimestampMaybe, hashFile, makeIO, readExternsFile, readWarningsFile, readJSONFile, readTextFile, setTimestamp, writeCborFile, writeJSONFile, writeTextFile)
 import Language.PureScript.Make.Cache (CacheDb, ContentHash, cacheDbIsCurrentVersion, fromCacheDbVersioned, normaliseForCache, toCacheDbVersioned)
+import Language.PureScript.Make.Patch (patchCoreFnJSON, patchDocsModule, patchExterns, patchSourceMapJSON, patchWarnings)
 import Language.PureScript.Make.ExternsDiff qualified as ED
 import Language.PureScript.Names (Ident(..), ModuleName, runModuleName)
 import Language.PureScript.Options (CodegenTarget(..), Options(..))
@@ -64,7 +65,6 @@ import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>), makeRelative, splitPath, normalise, splitDirectories)
 import System.FilePath.Posix qualified as Posix
 import System.IO (stderr, IOMode (..))
-import Language.PureScript.AST.Declarations (ErrorMessageHint(..))
 import Control.Concurrent.Lifted (newMVar, putMVar, takeMVar)
 import GHC.IO.StdHandles (withFile)
 import GHC.IO.Handle (hFlush)
@@ -196,10 +196,13 @@ data MakeActions m = MakeActions
   , updateOutputTimestamp :: ModuleName -> Maybe UTCTime -> m Bool
   -- ^ Updates the modification time of existing output files to mark them as
   -- actual.
+  , patchOutputModulePath :: ModuleName -> (FilePath, FilePath) -> (ExternsFile, MultipleErrors) -> m (ExternsFile, MultipleErrors)
+  -- ^ Patches source file path value of supplied externs and warnings, saves
+  -- them and also updates in place other build artifacts.
   , readExterns :: ModuleName -> m (FilePath, Maybe ExternsFile)
   -- ^ Read the externs file for a module as a string and also return the actual
   -- path for the file.
-  , readWarnings :: (ModuleName, FilePath) -> m (FilePath, Maybe MultipleErrors)
+  , readWarnings :: ModuleName -> m (FilePath, Maybe MultipleErrors)
   -- ^ Read the file with cached warnings for a module and also return the
   -- actual path for the warnings file. It also requires module's filePath to place
   -- it in source spans to personalize warnings.
@@ -229,17 +232,6 @@ cacheDbFile = (</> "cache-db.json")
 
 warningsFileName :: FilePath
 warningsFileName = "warnings.cbor"
-
-replaceSpanNameInErrors :: FilePath -> MultipleErrors -> MultipleErrors
-replaceSpanNameInErrors fp =
-  onErrorMessages replace
-  where
-  replaceSpan = replaceSpanName fp
-  replaceHint = \case
-    PositionedError ss -> PositionedError (replaceSpan <$> ss)
-    RelatedPositions ss -> RelatedPositions (replaceSpan <$> ss)
-    h -> h
-  replace (ErrorMessage hints e) = ErrorMessage (replaceHint <$> hints) e
 
 readCacheDb'
   :: (MonadIO m, MonadError MultipleErrors m)
@@ -321,6 +313,7 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     getInputTimestampsAndHashes
     getOutputTimestamp
     updateOutputTimestamp
+    patchOutputModulePath
     readExterns
     readWarnings
     codegen
@@ -363,29 +356,32 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
   getOutputTimestamp mn = do
     codegenTargets <- asks optionsCodegenTargets
     mExternsTimestamp <- getTimestampMaybe (outputFilename mn externsFileName)
-    case mExternsTimestamp of
-      Nothing ->
-        -- If there is no externs file, we will need to compile the module in
+    mWarningsTimestamp <- getTimestampMaybe (outputFilename mn warningsFileName)
+    case (mExternsTimestamp, mWarningsTimestamp) of
+      (Just externsTimestamp, Just warningsTimestamp)
+        | warningsTimestamp < externsTimestamp -> pure Nothing
+        | otherwise ->
+          case NEL.nonEmpty (fmap (targetFilename mn) (S.toList codegenTargets)) of
+            Nothing ->
+              -- If the externs file exists and no other codegen targets have
+              -- been requested, then we can consider the module up-to-date
+              pure (Just externsTimestamp)
+            Just outputPaths -> do
+              -- If any of the other output paths are nonexistent or older than
+              -- the externs file, then they should be considered outdated, and
+              -- so the module will need rebuilding.
+              mmodTimes <- traverse getTimestampMaybe outputPaths
+              pure $ case sequence mmodTimes of
+                Nothing ->
+                  Nothing
+                Just modTimes ->
+                  if externsTimestamp <= minimum modTimes
+                    then Just externsTimestamp
+                    else Nothing
+      (_, _) ->
+        -- If there is no externs or warnings file, we will need to compile the module in
         -- order to produce one.
         pure Nothing
-      Just externsTimestamp ->
-        case NEL.nonEmpty (fmap (targetFilename mn) (S.toList codegenTargets)) of
-          Nothing ->
-            -- If the externs file exists and no other codegen targets have
-            -- been requested, then we can consider the module up-to-date
-            pure (Just externsTimestamp)
-          Just outputPaths -> do
-            -- If any of the other output paths are nonexistent or older than
-            -- the externs file, then they should be considered outdated, and
-            -- so the module will need rebuilding.
-            mmodTimes <- traverse getTimestampMaybe outputPaths
-            pure $ case sequence mmodTimes of
-              Nothing ->
-                Nothing
-              Just modTimes ->
-                if externsTimestamp <= minimum modTimes
-                  then Just externsTimestamp
-                  else Nothing
 
   updateOutputTimestamp :: ModuleName -> Maybe UTCTime -> Make Bool
   updateOutputTimestamp mn mbTime = do
@@ -399,32 +395,59 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     -- if something goes wrong, something failed to update, return Nothing
     pure $ and (ok : results)
 
+  patchJSONFile :: forall a. ToJSON a => FromJSON a => FilePath -> (a -> a) -> Make ()
+  patchJSONFile filePath patchFn = do
+    mbVal <- readJSONFile filePath
+    let throw = makeIO ("patch JSON file: " <> T.pack filePath) $ error "could not read or parse file"
+    maybe throw (writeJSONFile filePath .  patchFn) mbVal
+
+  patchOutputModulePath :: ModuleName -> (FilePath, FilePath) -> (ExternsFile, MultipleErrors) -> Make (ExternsFile, MultipleErrors)
+  patchOutputModulePath mn (oldFp, newFp) (exts, warns) = do
+    let
+      mkPatchFn transform fp = if fp == transform oldFp then transform newFp else fp
+      patchFn = mkPatchFn id
+      exts' = patchExterns patchFn exts
+      warns' = patchWarnings patchFn warns
+
+    writeCborFile (outputFilename mn externsFileName) exts'
+    writeCborFile (outputFilename mn warningsFileName) warns'
+
+    codegenTargets <- asks optionsCodegenTargets
+    when (S.member CoreFn codegenTargets) $
+      patchJSONFile (targetFilename mn CoreFn) (patchCoreFnJSON patchFn)
+
+    when (S.member Docs codegenTargets) $
+      patchJSONFile (targetFilename mn Docs) (patchDocsModule patchFn)
+
+    when (S.member JSSourceMap codegenTargets) $ do
+      dir <- makeIO "get the current directory" getCurrentDirectory
+      let patchSourceMapFn = mkPatchFn (makeSourceFilePath dir)
+      patchJSONFile (targetFilename mn JSSourceMap) (patchSourceMapJSON patchSourceMapFn)
+
+    pure (exts', warns')
+
   readExterns :: ModuleName -> Make (FilePath, Maybe ExternsFile)
   readExterns mn = do
     let path = outputDir </> T.unpack (runModuleName mn) </> externsFileName
     (path, ) <$> readExternsFile path
 
-  readWarnings :: (ModuleName, FilePath) -> Make (FilePath, Maybe MultipleErrors)
-  readWarnings (mn, fp) = do
+  readWarnings :: ModuleName -> Make (FilePath, Maybe MultipleErrors)
+  readWarnings mn = do
     let path = outputDir </> T.unpack (runModuleName mn) </> warningsFileName
-    (path, ) . fmap (replaceSpanNameInErrors fp) <$> readWarningsFile path
+    (path, ) <$> readWarningsFile path
 
   outputPrimDocs :: Make ()
   outputPrimDocs = do
     codegenTargets <- asks optionsCodegenTargets
     when (S.member Docs codegenTargets) $ for_ Docs.Prim.primModules $ \docsMod@Docs.Module{..} ->
-      writeJSONFile (outputFilename modName "docs.json") docsMod
+      writeJSONFile (targetFilename modName Docs) docsMod
 
   codegen :: CF.Module CF.Ann -> Docs.Module -> ExternsFile -> MultipleErrors -> SupplyT Make ()
   codegen m docs exts warnings = do
     let mn = CF.moduleName m
     lift $ writeCborFile (outputFilename mn externsFileName) exts
-    let warningsFile = outputFilename mn warningsFileName
-    lift $ if nonEmpty warnings then
-      -- Remove spanName from the errors
-      writeCborFile warningsFile (replaceSpanNameInErrors "" warnings)
-    else
-       removeFileIfExists warningsFile
+    lift $ writeCborFile (outputFilename mn warningsFileName) warnings
+
     codegenTargets <- lift $ asks optionsCodegenTargets
     when (S.member CoreFn codegenTargets) $ do
       let coreFnFile = targetFilename mn CoreFn
@@ -452,19 +475,25 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
         writeTextFile jsFile (TE.encodeUtf8 $ js <> mapRef)
         when sourceMaps $ genSourceMap dir mapFile (length prefix) mappings
     when (S.member Docs codegenTargets) $ do
-      lift $ writeJSONFile (outputFilename mn "docs.json") docs
+      lift $ writeJSONFile (targetFilename mn Docs) docs
 
   ffiCodegen :: CF.Module CF.Ann -> Make ()
   ffiCodegen m = do
     codegenTargets <- asks optionsCodegenTargets
     ffiCodegen' foreigns codegenTargets (Just outputFilename) m
 
+  makeSourceFilePath :: FilePath -> FilePath -> FilePath
+  makeSourceFilePath dir file = pathToDir Posix.</> normalizeSMPath (makeRelative dir file)
+    where
+    pathToDir = iterate (".." Posix.</>) ".." !! length (splitPath $ normalise outputDir)
+    normalizeSMPath :: FilePath -> FilePath
+    normalizeSMPath = Posix.joinPath . splitDirectories
+
   genSourceMap :: String -> String -> Int -> [SMap] -> Make ()
   genSourceMap dir mapFile extraLines mappings = do
-    let pathToDir = iterate (".." Posix.</>) ".." !! length (splitPath $ normalise outputDir)
-        sourceFile = case mappings of
-                      (SMap file _ _ : _) -> Just $ pathToDir Posix.</> normalizeSMPath (makeRelative dir (T.unpack file))
-                      _ -> Nothing
+    let sourceFile = case mappings of
+          (SMap file _ _ : _) -> Just $ makeSourceFilePath dir (T.unpack file)
+          _ -> Nothing
     let rawMapping = SourceMapping { smFile = "index.js", smSourceRoot = Nothing, smMappings =
       map (\(SMap _ orig gen) -> Mapping {
           mapOriginal = Just $ convertPos $ add 0 (-1) orig
@@ -482,9 +511,6 @@ buildMakeActions outputDir filePathMap foreigns usePrefix =
     convertPos :: SourcePos -> Pos
     convertPos SourcePos { sourcePosLine = l, sourcePosColumn = c } =
       Pos { posLine = fromIntegral l, posColumn = fromIntegral c }
-
-    normalizeSMPath :: FilePath -> FilePath
-    normalizeSMPath = Posix.joinPath . splitDirectories
 
   requiresForeign :: CF.Module a -> Bool
   requiresForeign = not . null . CF.moduleForeign

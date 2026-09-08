@@ -584,7 +584,7 @@ refineDeclaration = \case
     refineArgs = map (map (map refineType))
     refineTypeKind = \case
       -- Remove the notion of data constructors, we only compare type's left side.
-      (P.DataType dt args _) -> (P.DataType dt (refineDataArgs args) [])
+      (P.DataType dt args _) -> P.DataType dt (refineDataArgs args) []
       other -> other
     refineDataArgs =
       zipWith (\idx (_, t, role) -> ("a" <> show idx, refineType <$> t, role)) [(0 :: Int)..]

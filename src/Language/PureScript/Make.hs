@@ -1,6 +1,5 @@
 module Language.PureScript.Make
   ( make
-  , make_
   , make'
   , MakeOptions(..)
   , defaultMakeOptions
@@ -17,7 +16,7 @@ import Prelude
 import Control.Concurrent.Lifted as C
 import Control.DeepSeq (force)
 import Control.Exception.Lifted (bracket_, evaluate, onException)
-import Control.Monad ( foldM, unless, void, when, (<=<))
+import Control.Monad (foldM, unless, when, (<=<))
 import Control.Monad.Base (MonadBase (liftBase))
 import Control.Monad.Error.Class (MonadError (..))
 import Control.Monad.IO.Class (MonadIO (..))
@@ -31,7 +30,7 @@ import Data.Function (on)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty qualified as NEL
 import Data.Map qualified as M
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe, isJust)
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Time (diffUTCTime)
@@ -43,10 +42,10 @@ import Language.PureScript.Crash (internalError)
 import Language.PureScript.Docs.Convert qualified as Docs
 import Language.PureScript.Environment (initEnvironment)
 import Language.PureScript.Errors (MultipleErrors (..), SimpleErrorMessage (..), addHint, defaultPPEOptions, errorMessage', errorMessage'', prettyPrintMultipleErrors)
-import Language.PureScript.Externs (ExternsFile, applyExternsFileToEnvironment, moduleToExternsFile)
+import Language.PureScript.Externs (ExternsFile(..), applyExternsFileToEnvironment, moduleToExternsFile)
 import Language.PureScript.Linter (Name (..), lint, lintImports)
 import Language.PureScript.Make.Actions as Actions
-import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..), getResult)
+import Language.PureScript.Make.BuildPlan (BuildJobResult (..), BuildPlan (..))
 import Language.PureScript.Make.BuildPlan qualified as BuildPlan
 import Language.PureScript.Make.Cache (replaceModules)
 import Language.PureScript.Make.ExternsDiff qualified as ED
@@ -163,16 +162,6 @@ make :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWrit
      -> m [ExternsFile]
 make  = make' defaultMakeOptions
 
--- | Compiles in "make" mode, compiling each module separately to a @.js@ file
--- and an @externs.cbor@ file.
---
--- This version of make returns nothing.
-make_ :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
-     => MakeActions m
-     -> [CST.PartialResult Module]
-     -> m ()
-make_ ma ms = void $ make' (defaultMakeOptions {moCollectAll = False}) ma ms
-
 make' :: forall m. (MonadBaseControl IO m, MonadError MultipleErrors m, MonadWriter MultipleErrors m)
      => MakeOptions
      -> MakeActions m
@@ -204,6 +193,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
     let moduleName = getModuleName . CST.resPartial $ m
     let deps = fromMaybe (internalError "make: module not found in dependency graph.") (lookup moduleName graph)
     let directDeps = S.fromList $ map snd $ filter ((==) Direct . fst) deps
+
     buildModule lock buildPlan moduleName totalModuleCount
       (spanName . getModuleSourceSpan . CST.resPartial $ m)
       (fst $ CST.resFull m)
@@ -219,8 +209,9 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
   (failures, successes') <-
     let
       splitResults = \case
-        BuildJobSucceeded _ warns exts _ ->
-          Right (exts, warns)
+        BuildJobSucceeded br warns exts _ ->
+          -- If not collecting all, take only compiled results.
+          if moCollectAll || isJust br then Right (exts, warns) else Left mempty
         BuildJobFailed errs ->
           Left errs
         BuildJobSkipped ->
@@ -306,8 +297,7 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
       --
       -- The result wil contain externs and externs diffs to check against if
       -- the build is needed.
-
-      depsExts <- fmap unzip . sequence <$> traverse (getResult buildPlan) deps
+      depsExts <- fmap unzip . sequence <$> traverse (BuildPlan.getResult buildPlan) deps
 
       let prevResult = BuildPlan.getPrevResult buildPlan moduleName
 
@@ -336,10 +326,17 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
             case BuildPlan.getBuildReason buildPlan m depsDiffs of
               -- No rebuild reason skipping the module.
               Left (exts, warnings) -> do
-                _ <- updateOutputTimestamp moduleName Nothing
+                let extFp = spanName $ efSourceSpan exts
+                let wasMoved = fp /= extFp
+                (exts', warnings') <-
+                  if wasMoved then
+                    patchOutputModulePath moduleName (extFp, fp) (exts, warnings)
+                  else
+                    (exts, warnings) <$ updateOutputTimestamp moduleName Nothing
+
                 progress $ SkippingModule moduleName moduleIndex
                 -- Prebuilt result warnings already contain parser warnings.
-                pure $ BuildJobSucceeded Nothing warnings exts (Just (ED.emptyDiff moduleName))
+                pure $ BuildJobSucceeded Nothing warnings' exts' (Just (ED.emptyDiff moduleName))
 
               Right br -> do
                 start <- liftBase getCurrentTime
@@ -357,7 +354,6 @@ make' MakeOptions{..} ma@MakeActions{..} ms = do
                 -- forcing the result. This is done to limit concurrency and keep
                 -- memory usage down; see comments above.
                 (exts, warnings) <- bracket_ (C.waitQSem lock) (C.signalQSem lock) $ do
-
                   -- Eventlog markers for profiling; see debug/eventlog.js
                   liftBase $ traceMarkerIO $ T.unpack (runModuleName moduleName) <> " start"
                   -- Force the externs and warnings to avoid retaining excess module

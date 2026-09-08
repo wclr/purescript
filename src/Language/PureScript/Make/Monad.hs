@@ -14,7 +14,6 @@ module Language.PureScript.Make.Monad
   , readCborFileIO
   , readExternsFile
   , readWarningsFile
-  , removeFileIfExists
   , hashFile
   , writeTextFile
   , writeJSONFile
@@ -28,7 +27,7 @@ import Prelude
 import Codec.Serialise (Serialise)
 import Codec.Serialise qualified as Serialise
 import Control.Exception (fromException, tryJust, Exception (displayException))
-import Control.Monad (join, guard, void)
+import Control.Monad (join, guard)
 import Control.Monad.Base (MonadBase(..))
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.IO.Class (MonadIO(..))
@@ -48,7 +47,7 @@ import Language.PureScript.Errors (ErrorMessage(..), MultipleErrors, SimpleError
 import Language.PureScript.Externs (ExternsFile, externsIsCurrentVersion)
 import Language.PureScript.Make.Cache (ContentHash, hash)
 import Language.PureScript.Options (Options)
-import System.Directory (createDirectoryIfMissing, getModificationTime, removeFile, setModificationTime)
+import System.Directory (createDirectoryIfMissing, getModificationTime, setModificationTime)
 import System.Directory qualified as Directory
 import System.FilePath (takeDirectory)
 import System.IO.Error (tryIOError, isDoesNotExistError)
@@ -151,10 +150,6 @@ readExternsFile path = do
 readWarningsFile :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m (Maybe MultipleErrors)
 readWarningsFile path = do
   readCborFile path
-
-removeFileIfExists :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m ()
-removeFileIfExists path =
-  makeIO ("remove file if eixsts: " <> Text.pack path) $ (void . catchDoesNotExist) $ removeFile path
 
 hashFile :: (MonadIO m, MonadError MultipleErrors m) => FilePath -> m ContentHash
 hashFile path = do
